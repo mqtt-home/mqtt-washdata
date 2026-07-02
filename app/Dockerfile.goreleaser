@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.17
+
+# Final stage - only for the binary
+FROM gcr.io/distroless/static:nonroot
+
+WORKDIR /
+
+# Copy the pre-built binary from GoReleaser
+COPY mqtt-washdata /mqtt-washdata
+
+# Copy the frontend build files
+COPY web/dist/ /web/dist/
+
+# Use non-root user (distroless already provides this)
+USER nonroot:nonroot
+
+ENTRYPOINT ["/mqtt-washdata", "/var/lib/mqtt-washdata/config.json"]

@@ -1,0 +1,5 @@
+# Ignore everything in this directory (local config + recorded runs) ...
+*
+# ... except these committed files:
+!.gitignore
+!config.example.json

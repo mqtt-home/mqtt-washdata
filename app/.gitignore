@@ -1,0 +1,6 @@
+build/
+dist/
+node_modules/
+*.tsbuildinfo
+.DS_Store
+RELEASE_NOTES.md

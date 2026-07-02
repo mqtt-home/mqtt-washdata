@@ -1,0 +1,28 @@
+{
+  "mqtt": {
+    "url": "tcp://192.168.0.1:1883",
+    "topic": "home/washdata/dryer",
+    "qos": 2,
+    "retain": true,
+    "username": "${MQTT_USER}",
+    "password": "${MQTT_PASS}"
+  },
+  "dryer": {
+    "name": "Dryer",
+    "shelly_topic": "shelly/dryer",
+    "detection": {
+      "start_watts": 20,
+      "stop_watts": 5,
+      "start_debounce_sec": 20,
+      "stop_debounce_sec": 180,
+      "sample_interval_sec": 10,
+      "heater_watts": 800,
+      "min_run_sec": 120
+    }
+  },
+  "web": {
+    "enabled": true,
+    "port": 8080
+  },
+  "loglevel": "info"
+}
