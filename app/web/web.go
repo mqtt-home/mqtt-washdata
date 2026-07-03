@@ -63,6 +63,8 @@ func (ws *WebServer) setupRoutes() {
 			r.Post("/runs/{id}/label", ws.labelRun)
 			r.Delete("/runs/{id}", ws.deleteRun)
 			r.Get("/programs", ws.getPrograms)
+			r.Get("/export", ws.exportData)
+			r.Post("/import", ws.importData)
 			r.Get("/events", ws.handleSSE)
 		})
 	})
@@ -179,6 +181,44 @@ func (ws *WebServer) deleteRun(w http.ResponseWriter, r *http.Request) {
 
 func (ws *WebServer) getPrograms(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, ws.manager.Programs())
+}
+
+// exportPayload is the portable snapshot of an instance's learned data: all
+// runs including their samples and labels. Programs are not exported — they
+// are re-derived from the runs on import.
+type exportPayload struct {
+	Version    int          `json:"version"`
+	ExportedAt time.Time    `json:"exportedAt"`
+	Runs       []*dryer.Run `json:"runs"`
+}
+
+func (ws *WebServer) exportData(w http.ResponseWriter, _ *http.Request) {
+	payload := exportPayload{
+		Version:    1,
+		ExportedAt: time.Now().UTC(),
+		Runs:       ws.manager.Runs(),
+	}
+	name := "washdata-export-" + time.Now().UTC().Format("20060102-150405") + ".json"
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	writeJSON(w, payload)
+}
+
+func (ws *WebServer) importData(w http.ResponseWriter, r *http.Request) {
+	var payload exportPayload
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20)).Decode(&payload); err != nil {
+		http.Error(w, "invalid export file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if payload.Version != 1 {
+		http.Error(w, fmt.Sprintf("unsupported export version %d", payload.Version), http.StatusBadRequest)
+		return
+	}
+	imported, skipped, err := ws.manager.ImportRuns(payload.Runs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]int{"imported": imported, "skipped": skipped})
 }
 
 // --- SSE ---

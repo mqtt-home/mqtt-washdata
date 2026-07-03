@@ -79,6 +79,10 @@ See [`app/production/config/config.example.json`](app/production/config/config.e
     meter is read from the `switch:<id>` or `pm1:<id>` component (the Plug PM
     Gen3 reports `pm1:0`). Frames without power data (e.g. sys updates) are ignored.
 - **Publishes** `status_update` to `<shelly_topic>/command` on start to get a fresh reading.
+- **Export/Import**: `GET /api/export` downloads all recorded runs (with samples
+  and labels) as JSON; `POST /api/import` upserts such a file and re-learns the
+  programs — use it to move learned data between instances (e.g. dev → cluster).
+  Both are also available as buttons in the web UI header.
 - **Publishes** (retained): `<mqtt.topic>/status` — the live status payload:
 
 ```json

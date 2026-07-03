@@ -40,3 +40,15 @@ export async function fetchPrograms(): Promise<Program[]> {
   if (!res.ok) throw new Error('Failed to fetch programs')
   return (await res.json()) ?? []
 }
+
+export const EXPORT_URL = `${API_BASE}/export`
+
+export async function importData(file: File): Promise<{ imported: number; skipped: number }> {
+  const res = await fetch(`${API_BASE}/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: file,
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}

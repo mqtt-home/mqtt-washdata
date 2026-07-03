@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
-import { LayoutDashboard, Waves, WifiOff } from 'lucide-react'
+import { Download, LayoutDashboard, Upload, Waves, WifiOff } from 'lucide-react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LiveCard } from '@/components/LiveCard'
 import { RunsList } from '@/components/RunsList'
 import { RunDetail } from '@/components/RunDetail'
 import { Programs } from '@/components/Programs'
 import { useLiveStatus } from '@/hooks/useSSE'
-import { fetchPrograms, fetchRuns } from '@/lib/api'
+import { EXPORT_URL, fetchPrograms, fetchRuns, importData } from '@/lib/api'
 import { Program, Run } from '@/types/dryer'
 
 export function App() {
@@ -62,6 +62,7 @@ export function App() {
                 <Waves className="h-4 w-4" /> Programs
               </NavButton>
             </nav>
+            <ExportImport onImported={load} />
             <ThemeToggle />
           </div>
         </div>
@@ -102,6 +103,44 @@ function RunDetailRoute({ programs, onChanged }: { programs: Program[]; onChange
   const navigate = useNavigate()
   if (!id) return <Navigate to="/" replace />
   return <RunDetail id={id} programs={programs} onBack={() => navigate('/')} onChanged={onChanged} />
+}
+
+function ExportImport({ onImported }: { onImported: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      const result = await importData(file)
+      alert(`Imported ${result.imported} run${result.imported === 1 ? '' : 's'} (${result.skipped} skipped).`)
+      onImported()
+    } catch (e) {
+      alert(`Import failed: ${e instanceof Error ? e.message : e}`)
+    } finally {
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const iconButton =
+    'rounded p-2 text-[color:var(--color-muted-foreground)] transition-colors hover:text-[color:var(--color-foreground)]'
+
+  return (
+    <>
+      <a href={EXPORT_URL} download title="Export runs" className={iconButton}>
+        <Download className="h-4 w-4" />
+      </a>
+      <button title="Import runs" className={iconButton} onClick={() => fileRef.current?.click()}>
+        <Upload className="h-4 w-4" />
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => onFile(e.target.files?.[0])}
+      />
+    </>
+  )
 }
 
 function NavButton({ to, children }: { to: string; children: ReactNode }) {

@@ -219,6 +219,27 @@ func (m *Manager) LabelRun(id, program string) (*Run, error) {
 	return r, nil
 }
 
+// ImportRuns upserts finished runs (e.g. exported from another instance) and
+// re-learns. Invalid entries are skipped. Returns (imported, skipped).
+func (m *Manager) ImportRuns(runs []*Run) (int, int, error) {
+	imported, skipped := 0, 0
+	for _, r := range runs {
+		if r == nil || r.ID == "" || !r.Finished || r.DurationSec <= 0 || len(r.Samples) == 0 {
+			skipped++
+			continue
+		}
+		if err := m.store.Save(r); err != nil {
+			return imported, skipped, err
+		}
+		imported++
+	}
+	if imported > 0 {
+		m.classifier.Build(m.store.All())
+	}
+	logger.Info("Runs imported", "imported", imported, "skipped", skipped)
+	return imported, skipped, nil
+}
+
 // DeleteRun removes a run and re-learns.
 func (m *Manager) DeleteRun(id string) error {
 	if _, ok := m.store.Get(id); !ok {

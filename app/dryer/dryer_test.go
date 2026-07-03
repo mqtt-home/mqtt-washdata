@@ -320,6 +320,44 @@ func TestEstimatorNeverDoneWhileRunning(t *testing.T) {
 	}
 }
 
+func TestImportRuns(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(config.DryerConfig{Name: "Test", Detection: testDetectionConfig()}, "t", false, store)
+
+	base := time.Unix(1_700_000_000, 0)
+	runs := []*Run{
+		makeRun("1", base, 3600, "Cottons", cottonsShape),
+		makeRun("2", base.Add(time.Hour), 3500, "Cottons", cottonsShape),
+		nil,                       // skipped
+		{ID: "3", Finished: true}, // skipped: no duration/samples
+	}
+	imported, skipped, err := m.ImportRuns(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported != 2 || skipped != 2 {
+		t.Errorf("imported=%d skipped=%d, want 2/2", imported, skipped)
+	}
+	if got := len(m.Runs()); got != 2 {
+		t.Errorf("stored runs = %d, want 2", got)
+	}
+	// Programs must be relearned from the imported runs.
+	if len(m.Programs()) != 1 || m.Programs()[0].Name != "Cottons" {
+		t.Errorf("expected learned Cottons program, got %+v", m.Programs())
+	}
+	// Import is idempotent (upsert by id).
+	imported, _, err = m.ImportRuns(runs[:2])
+	if err != nil || imported != 2 {
+		t.Errorf("re-import: imported=%d err=%v", imported, err)
+	}
+	if got := len(m.Runs()); got != 2 {
+		t.Errorf("after re-import stored runs = %d, want 2", got)
+	}
+}
+
 func TestEstimatorUnknownWithoutHistory(t *testing.T) {
 	c := NewClassifier()
 	c.Build(nil)
