@@ -170,12 +170,6 @@ func (d *Detector) finishRun(hasEnergy bool, energyTotal float64) *Run {
 	r.Finished = true
 	r.DurationSec = int(end.Sub(r.Start).Seconds())
 
-	// Trim trailing near-zero samples (the cool-down tail) so the profile ends
-	// where the dryer actually stopped drawing power.
-	for len(r.Samples) > 1 && r.Samples[len(r.Samples)-1].Power <= d.cfg.StopWatts {
-		r.Samples = r.Samples[:len(r.Samples)-1]
-	}
-
 	// Energy: prefer the device counter delta, fall back to integration.
 	if hasEnergy && d.hasCounter && energyTotal >= d.energyStart {
 		r.EnergyWh = round1(energyTotal - d.energyStart)
@@ -183,13 +177,81 @@ func (d *Detector) finishRun(hasEnergy bool, energyTotal float64) *Run {
 		r.EnergyWh = round1(d.integratedWh)
 	}
 
-	r.MeanPower = round1(meanPower(r.Samples))
+	TrimRunTail(r, d.cfg)
 	r.PeakPower = round1(r.PeakPower)
 
 	d.state = stateIdle
 	d.current = nil
 	d.belowSince = time.Time{}
 	return r
+}
+
+// idleTailWindowSec is the trailing window used to decide whether a run is
+// still actively drying at a given point (see lastActiveIndex).
+const idleTailWindowSec = 300
+
+// TrimRunTail cuts the idle end sequence off a finished run's profile and
+// fixes End/DurationSec/MeanPower accordingly. Two tails are removed: trailing
+// near-zero samples (cool-down), and the anti-crease ("Knitterschutz") /
+// standby tail — a dryer keeps drawing a few watts with brief periodic drum
+// tumbles after the program ended, which would otherwise inflate the learned
+// program duration. EnergyWh is left untouched; the tail's contribution is a
+// few watt-hours at most.
+func TrimRunTail(r *Run, cfg config.DetectionConfig) {
+	trimBelowStop := func() {
+		for len(r.Samples) > 1 && r.Samples[len(r.Samples)-1].Power <= cfg.StopWatts {
+			r.Samples = r.Samples[:len(r.Samples)-1]
+		}
+	}
+	trimBelowStop()
+	if cut := lastActiveIndex(r.Samples, cfg.StartWatts, idleTailWindowSec); cut >= 0 && cut < len(r.Samples)-1 {
+		r.Samples = r.Samples[:cut+1]
+		trimBelowStop()
+	}
+	if n := len(r.Samples); n > 0 {
+		if off := r.Samples[n-1].Offset; off > 0 && off < r.DurationSec {
+			r.DurationSec = off
+			r.End = r.Start.Add(time.Duration(off) * time.Second)
+		}
+	}
+	r.MeanPower = round1(meanPower(r.Samples))
+}
+
+// lastActiveIndex returns the index of the last sample that still belongs to
+// the active part of the run: the last sample whose trailing windowSec spent
+// at least half its time at or above activeWatts. Time is measured with
+// sample-and-hold semantics (a reading holds until the next one), because
+// samples arrive on power *changes*: an anti-crease tumble emits a burst of
+// samples but only covers the few seconds it actually lasted, while the idle
+// baseline in between covers minutes. The continuously powered main cycle is
+// above the threshold nearly 100% of the time. Returns -1 when no window
+// qualifies.
+func lastActiveIndex(samples []PowerSample, activeWatts float64, windowSec int) int {
+	for i := len(samples) - 1; i >= 0; i-- {
+		tStart := samples[i].Offset - windowSec
+		active, total := 0, 0
+		for j := i - 1; j >= 0 && samples[j+1].Offset > tStart; j-- {
+			lo := samples[j].Offset
+			if lo < tStart {
+				lo = tStart
+			}
+			seg := samples[j+1].Offset - lo
+			if samples[j].Power >= activeWatts {
+				active += seg
+			}
+			total += seg
+		}
+		if total == 0 {
+			if samples[i].Power >= activeWatts {
+				return i
+			}
+			continue
+		}
+		if float64(active) >= 0.5*float64(total) {
+			return i
+		}
+	}
+	return -1
 }
 
 func meanPower(samples []PowerSample) float64 {

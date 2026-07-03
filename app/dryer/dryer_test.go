@@ -320,6 +320,51 @@ func TestEstimatorNeverDoneWhileRunning(t *testing.T) {
 	}
 }
 
+// TestTrimRunTail: a run recorded with a too-low stop threshold drags on
+// through anti-crease ("Knitterschutz") — ~7 W standby with brief drum tumbles
+// every few minutes. The trim must cut the profile back to the actual cycle.
+func TestTrimRunTail(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	r := makeRun("x", base, 3600, "", cottonsShape)
+	// 1h anti-crease tail: 7 W baseline sampled per minute, 150 W tumble
+	// spike every 5 minutes.
+	for s := 3660; s <= 7200; s += 60 {
+		p := 7.0
+		if s%300 == 0 {
+			p = 150
+		}
+		r.Samples = append(r.Samples, PowerSample{Offset: s, Power: p})
+	}
+	r.DurationSec = 7200
+	r.End = base.Add(7200 * time.Second)
+
+	TrimRunTail(r, testDetectionConfig())
+
+	if r.DurationSec < 3400 || r.DurationSec > 3900 {
+		t.Errorf("trimmed duration = %d, want ~3600", r.DurationSec)
+	}
+	if last := r.Samples[len(r.Samples)-1].Offset; last != r.DurationSec {
+		t.Errorf("last sample offset %d != duration %d", last, r.DurationSec)
+	}
+	if !r.End.Equal(base.Add(time.Duration(r.DurationSec) * time.Second)) {
+		t.Errorf("End not adjusted to trimmed duration")
+	}
+	if r.MeanPower < 200 {
+		t.Errorf("mean power = %f, tail should not drag it down", r.MeanPower)
+	}
+}
+
+// TestTrimRunTailKeepsCleanRun: a profile without an idle tail is unchanged.
+func TestTrimRunTailKeepsCleanRun(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	r := makeRun("x", base, 3600, "", cottonsShape)
+	samples := len(r.Samples)
+	TrimRunTail(r, testDetectionConfig())
+	if r.DurationSec != 3600 || len(r.Samples) != samples {
+		t.Errorf("clean run modified: duration=%d samples=%d", r.DurationSec, len(r.Samples))
+	}
+}
+
 func TestImportRuns(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

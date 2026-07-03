@@ -220,7 +220,10 @@ func (m *Manager) LabelRun(id, program string) (*Run, error) {
 }
 
 // ImportRuns upserts finished runs (e.g. exported from another instance) and
-// re-learns. Invalid entries are skipped. Returns (imported, skipped).
+// re-learns. Invalid entries are skipped. Imported runs get their idle tail
+// trimmed, so recordings made with too-low stop thresholds (runs that dragged
+// on through anti-crease / standby) are sanitized on the way in. Returns
+// (imported, skipped).
 func (m *Manager) ImportRuns(runs []*Run) (int, int, error) {
 	imported, skipped := 0, 0
 	for _, r := range runs {
@@ -228,6 +231,7 @@ func (m *Manager) ImportRuns(runs []*Run) (int, int, error) {
 			skipped++
 			continue
 		}
+		TrimRunTail(r, m.cfg.Detection)
 		if err := m.store.Save(r); err != nil {
 			return imported, skipped, err
 		}
