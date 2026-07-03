@@ -42,10 +42,21 @@ const (
 	StateRunning = "running"
 )
 
+// Phase of a live run (only meaningful while running).
+const (
+	// PhaseDrying: the program is actively working.
+	PhaseDrying = "drying"
+	// PhaseAntiCrease: the program is complete; the dryer only tumbles
+	// periodically to prevent creases ("Knitterschutz").
+	PhaseAntiCrease = "anti-crease"
+)
+
 // LiveStatus is the payload published to MQTT and broadcast to the web UI on
 // every reading. It describes the current live run (or the idle state).
 type LiveStatus struct {
-	State      string  `json:"state"`
+	State string `json:"state"`
+	// Phase is "drying" or "anti-crease" while running, empty when idle.
+	Phase      string  `json:"phase,omitempty"`
 	DryerName  string  `json:"dryerName"`
 	Power      float64 `json:"power"`
 	Program    string  `json:"program,omitempty"`

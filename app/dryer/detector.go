@@ -217,41 +217,58 @@ func TrimRunTail(r *Run, cfg config.DetectionConfig) {
 	r.MeanPower = round1(meanPower(r.Samples))
 }
 
+// isActiveAt reports whether the run is actively drying at sample i: whether
+// the trailing windowSec ending there spent at least half its time at or above
+// activeWatts. Time is measured with sample-and-hold semantics (a reading
+// holds until the next one), because samples arrive on power *changes*: an
+// anti-crease tumble emits a burst of samples but only covers the few seconds
+// it actually lasted, while the idle baseline in between covers minutes. The
+// continuously powered main cycle is above the threshold nearly 100% of the
+// time.
+func isActiveAt(samples []PowerSample, i int, activeWatts float64, windowSec int) bool {
+	tStart := samples[i].Offset - windowSec
+	active, total := 0, 0
+	for j := i - 1; j >= 0 && samples[j+1].Offset > tStart; j-- {
+		lo := samples[j].Offset
+		if lo < tStart {
+			lo = tStart
+		}
+		seg := samples[j+1].Offset - lo
+		if samples[j].Power >= activeWatts {
+			active += seg
+		}
+		total += seg
+	}
+	if total == 0 {
+		return samples[i].Power >= activeWatts
+	}
+	return float64(active) >= 0.5*float64(total)
+}
+
 // lastActiveIndex returns the index of the last sample that still belongs to
-// the active part of the run: the last sample whose trailing windowSec spent
-// at least half its time at or above activeWatts. Time is measured with
-// sample-and-hold semantics (a reading holds until the next one), because
-// samples arrive on power *changes*: an anti-crease tumble emits a burst of
-// samples but only covers the few seconds it actually lasted, while the idle
-// baseline in between covers minutes. The continuously powered main cycle is
-// above the threshold nearly 100% of the time. Returns -1 when no window
-// qualifies.
+// the active part of the run (see isActiveAt), or -1 when none qualifies.
 func lastActiveIndex(samples []PowerSample, activeWatts float64, windowSec int) int {
 	for i := len(samples) - 1; i >= 0; i-- {
-		tStart := samples[i].Offset - windowSec
-		active, total := 0, 0
-		for j := i - 1; j >= 0 && samples[j+1].Offset > tStart; j-- {
-			lo := samples[j].Offset
-			if lo < tStart {
-				lo = tStart
-			}
-			seg := samples[j+1].Offset - lo
-			if samples[j].Power >= activeWatts {
-				active += seg
-			}
-			total += seg
-		}
-		if total == 0 {
-			if samples[i].Power >= activeWatts {
-				return i
-			}
-			continue
-		}
-		if float64(active) >= 0.5*float64(total) {
+		if isActiveAt(samples, i, activeWatts, windowSec) {
 			return i
 		}
 	}
 	return -1
+}
+
+// Phase reports which phase the in-progress run is in: PhaseDrying while the
+// dryer is actively working, PhaseAntiCrease once the recent profile shows
+// only the brief periodic tumbles of the end sequence ("Knitterschutz").
+// Empty when idle.
+func (d *Detector) Phase() string {
+	if d.state != stateRunning || d.current == nil || len(d.current.Samples) == 0 {
+		return ""
+	}
+	s := d.current.Samples
+	if isActiveAt(s, len(s)-1, d.cfg.StartWatts, idleTailWindowSec) {
+		return PhaseDrying
+	}
+	return PhaseAntiCrease
 }
 
 func meanPower(samples []PowerSample) float64 {

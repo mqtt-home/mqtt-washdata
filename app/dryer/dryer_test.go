@@ -320,6 +320,47 @@ func TestEstimatorNeverDoneWhileRunning(t *testing.T) {
 	}
 }
 
+// TestDetectorPhase: while the cycle draws sustained power the phase is
+// "drying"; once only brief anti-crease tumbles remain it flips to
+// "anti-crease".
+func TestDetectorPhase(t *testing.T) {
+	d := NewDetector(testDetectionConfig())
+	base := time.Unix(1_700_000_000, 0)
+	feed := func(offsetSec int, power float64) {
+		d.Feed(base.Add(time.Duration(offsetSec)*time.Second), power, 0, false)
+	}
+
+	if got := d.Phase(); got != "" {
+		t.Errorf("idle phase = %q, want empty", got)
+	}
+
+	// 30 min sustained cycle at ~350 W (sampled per 10s).
+	for s := 0; s <= 1800; s += 10 {
+		feed(s, 350)
+	}
+	if got := d.Phase(); got != PhaseDrying {
+		t.Errorf("phase during cycle = %q, want %q", got, PhaseDrying)
+	}
+
+	// 20 min anti-crease: 7 W baseline per minute, short 130 W tumble
+	// burst every 5 minutes (three change-driven samples within seconds).
+	for s := 1860; s <= 3000; s += 60 {
+		if s%300 == 0 {
+			feed(s, 110)
+			feed(s+5, 130)
+			feed(s+15, 7)
+		} else {
+			feed(s, 7)
+		}
+	}
+	if got := d.Phase(); got != PhaseAntiCrease {
+		t.Errorf("phase during anti-crease = %q, want %q", got, PhaseAntiCrease)
+	}
+	if !d.Running() {
+		t.Fatal("run should still be open during anti-crease")
+	}
+}
+
 // TestTrimRunTail: a run recorded with a too-low stop threshold drags on
 // through anti-crease ("Knitterschutz") — ~7 W standby with brief drum tumbles
 // every few minutes. The trim must cut the profile back to the actual cycle.

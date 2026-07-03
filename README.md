@@ -86,10 +86,14 @@ See [`app/production/config/config.example.json`](app/production/config/config.e
 - **Publishes** (retained): `<mqtt.topic>/status` — the live status payload:
 
 ```json
-{ "state": "running", "dryerName": "Dryer", "program": "Cottons", "confidence": 0.82,
-  "power": 1850.4, "energyWh": 1234, "elapsedSec": 3600, "remainingSec": 1800,
-  "progress": 0.66, "eta": "2026-07-01T18:30:00Z", "runId": "1719849600" }
+{ "state": "running", "phase": "drying", "dryerName": "Dryer", "program": "Cottons",
+  "confidence": 0.82, "power": 1850.4, "energyWh": 1234, "elapsedSec": 3600,
+  "remainingSec": 1800, "progress": 0.66, "eta": "2026-07-01T18:30:00Z", "runId": "1719849600" }
 ```
+
+  `phase` is `"drying"` while the program is actively working and `"anti-crease"`
+  once only the periodic anti-crease tumbles ("Knitterschutz") remain — the
+  laundry is dry and can be removed; `remainingSec` is 0 and `progress` is 1.
 
 ## Web API
 

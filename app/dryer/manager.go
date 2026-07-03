@@ -146,6 +146,7 @@ func (m *Manager) updateLive(ts time.Time, power float64) {
 		est := m.classifier.EstimatePartial(cur.Samples, elapsed, energy)
 
 		ls.State = StateRunning
+		ls.Phase = m.detector.Phase()
 		ls.RunID = cur.ID
 		ls.ElapsedSec = elapsed
 		ls.EnergyWh = energy
@@ -153,7 +154,12 @@ func (m *Manager) updateLive(ts time.Time, power float64) {
 		ls.Confidence = round2(est.Confidence)
 		ls.RemainingSec = est.RemainingSec
 		ls.Progress = round2(est.Progress)
-		if est.RemainingSec >= 0 {
+		if ls.Phase == PhaseAntiCrease {
+			// The program itself is done — the dryer only tumbles to prevent
+			// creases. The countdown is over; consumers show the phase instead.
+			ls.RemainingSec = 0
+			ls.Progress = 1
+		} else if est.RemainingSec >= 0 {
 			eta := ts.Add(time.Duration(est.RemainingSec) * time.Second)
 			ls.ETA = &eta
 		}

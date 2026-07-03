@@ -11,6 +11,7 @@ interface Props {
 
 export function LiveCard({ status, connected }: Props) {
   const running = status?.state === 'running'
+  const antiCrease = running && status?.phase === 'anti-crease'
   const progress = status && status.progress >= 0 ? status.progress : null
   const remaining = status && status.remainingSec >= 0 ? status.remainingSec : null
 
@@ -28,22 +29,35 @@ export function LiveCard({ status, connected }: Props) {
           </div>
           <span
             className={`rounded-full px-3 py-1 text-xs font-medium ${
-              running
-                ? 'bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]'
-                : 'bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)]'
+              antiCrease
+                ? 'bg-[color:var(--color-warning)]/15 text-[color:var(--color-warning)]'
+                : running
+                  ? 'bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]'
+                  : 'bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)]'
             }`}
           >
-            {connected ? (running ? 'Running' : 'Idle') : 'Offline'}
+            {connected ? (antiCrease ? 'Knitterschutz' : running ? 'Running' : 'Idle') : 'Offline'}
           </span>
         </div>
 
         {running ? (
           <>
             <div className="mt-6 flex items-end gap-3">
-              <div className="text-5xl font-bold tabular-nums">
-                {remaining !== null ? formatDuration(remaining) : '–'}
-              </div>
-              <div className="pb-1 text-sm text-[color:var(--color-muted-foreground)]">remaining</div>
+              {antiCrease ? (
+                <>
+                  <div className="text-5xl font-bold">Knitterschutz</div>
+                  <div className="pb-1 text-sm text-[color:var(--color-muted-foreground)]">
+                    done — laundry can be removed
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-5xl font-bold tabular-nums">
+                    {remaining !== null ? formatDuration(remaining) : '–'}
+                  </div>
+                  <div className="pb-1 text-sm text-[color:var(--color-muted-foreground)]">remaining</div>
+                </>
+              )}
             </div>
 
             <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-[color:var(--color-muted)]">
@@ -66,9 +80,11 @@ export function LiveCard({ status, connected }: Props) {
                   'Detecting program…'
                 )}
               </span>
-              <span className="flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5" /> ETA {formatClock(status?.eta)}
-              </span>
+              {!antiCrease && (
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3.5 w-3.5" /> ETA {formatClock(status?.eta)}
+                </span>
+              )}
             </div>
 
             <div className="mt-6 grid grid-cols-3 gap-3">

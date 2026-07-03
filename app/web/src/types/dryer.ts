@@ -2,6 +2,7 @@ export type DryerState = 'idle' | 'running'
 
 export interface LiveStatus {
   state: DryerState
+  phase?: 'drying' | 'anti-crease'
   dryerName: string
   power: number
   program?: string
