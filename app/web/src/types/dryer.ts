@@ -2,7 +2,7 @@ export type DryerState = 'idle' | 'running'
 
 export interface LiveStatus {
   state: DryerState
-  phase?: 'drying' | 'anti-crease'
+  phase?: 'drying' | 'cooling' | 'anti-crease'
   dryerName: string
   power: number
   program?: string
@@ -21,6 +21,11 @@ export interface PowerSample {
   power: number
 }
 
+export interface PhaseSpan {
+  phase: string
+  startSec: number
+}
+
 export interface Run {
   id: string
   start: string
@@ -35,6 +40,7 @@ export interface Run {
   confidence: number
   labeled: boolean
   samples?: PowerSample[]
+  phases?: PhaseSpan[]
 }
 
 export interface Program {

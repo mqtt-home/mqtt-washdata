@@ -342,9 +342,17 @@ func TestDetectorPhase(t *testing.T) {
 		t.Errorf("phase during cycle = %q, want %q", got, PhaseDrying)
 	}
 
+	// 3 min cool-down: drum + fan only, ~150 W sustained (below half peak).
+	for s := 1810; s <= 1980; s += 10 {
+		feed(s, 150)
+	}
+	if got := d.Phase(); got != PhaseCooling {
+		t.Errorf("phase during cool-down = %q, want %q", got, PhaseCooling)
+	}
+
 	// 20 min anti-crease: 7 W baseline per minute, short 130 W tumble
 	// burst every 5 minutes (three change-driven samples within seconds).
-	for s := 1860; s <= 3000; s += 60 {
+	for s := 2040; s <= 3300; s += 60 {
 		if s%300 == 0 {
 			feed(s, 110)
 			feed(s+5, 130)
@@ -358,6 +366,45 @@ func TestDetectorPhase(t *testing.T) {
 	}
 	if !d.Running() {
 		t.Fatal("run should still be open during anti-crease")
+	}
+}
+
+// TestPhaseSpans: a profile with cycle + cool-down shelf + anti-crease tail
+// yields the three phase boundaries.
+func TestPhaseSpans(t *testing.T) {
+	// Realistic heat-pump profile: sustained plateau with a sharp drop into
+	// the cool-down shelf (a sine taper would blur the boundary).
+	var samples []PowerSample
+	for s := 0; s <= 3600; s += 10 {
+		samples = append(samples, PowerSample{Offset: s, Power: 400})
+	}
+	// 4 min cool-down shelf at 150 W (sparse minute samples).
+	for s := 3660; s <= 3840; s += 60 {
+		samples = append(samples, PowerSample{Offset: s, Power: 150})
+	}
+	// 20 min anti-crease tail.
+	for s := 3900; s <= 5100; s += 60 {
+		p := 7.0
+		if s%300 == 0 {
+			p = 130
+		}
+		samples = append(samples, PowerSample{Offset: s, Power: p})
+	}
+
+	spans := PhaseSpans(samples, testDetectionConfig())
+	if len(spans) != 3 {
+		t.Fatalf("spans = %+v, want 3", spans)
+	}
+	if spans[0].Phase != PhaseDrying || spans[0].StartSec != 0 {
+		t.Errorf("span 0 = %+v", spans[0])
+	}
+	if spans[1].Phase != PhaseCooling || spans[1].StartSec < 3600 || spans[1].StartSec > 3700 {
+		t.Errorf("span 1 = %+v, want cooling near 3660", spans[1])
+	}
+	// The anti-crease boundary carries up to a window length of lag — the
+	// trailing window must first drain of shelf time.
+	if spans[2].Phase != PhaseAntiCrease || spans[2].StartSec < 3840 || spans[2].StartSec > 4200 {
+		t.Errorf("span 2 = %+v, want anti-crease shortly after 3900", spans[2])
 	}
 }
 

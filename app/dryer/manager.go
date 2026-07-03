@@ -200,6 +200,11 @@ func (m *Manager) Runs() []*Run { return m.store.All() }
 // Run returns a single run by id.
 func (m *Manager) Run(id string) (*Run, bool) { return m.store.Get(id) }
 
+// PhasesOf returns the phase boundaries of a run's profile.
+func (m *Manager) PhasesOf(r *Run) []PhaseSpan {
+	return PhaseSpans(r.Samples, m.cfg.Detection)
+}
+
 // Programs returns the learned programs.
 func (m *Manager) Programs() []*Program { return m.classifier.Programs() }
 

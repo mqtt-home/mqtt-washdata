@@ -46,6 +46,9 @@ const (
 const (
 	// PhaseDrying: the program is actively working.
 	PhaseDrying = "drying"
+	// PhaseCooling: the heat source is off; drum and fan finish the cycle
+	// ("Abkühlen"). The cycle result is already decided at this point.
+	PhaseCooling = "cooling"
 	// PhaseAntiCrease: the program is complete; the dryer only tumbles
 	// periodically to prevent creases ("Knitterschutz").
 	PhaseAntiCrease = "anti-crease"

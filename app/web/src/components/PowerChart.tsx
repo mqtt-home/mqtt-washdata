@@ -2,20 +2,30 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { PowerSample } from '@/types/dryer'
+import { PhaseSpan, PowerSample } from '@/types/dryer'
+
+const PHASE_LABELS: Record<string, string> = {
+  drying: 'Drying',
+  cooling: 'Cooling',
+  'anti-crease': 'Knitterschutz',
+}
 
 interface Props {
   samples: PowerSample[]
+  phases?: PhaseSpan[]
   height?: number
 }
 
-export function PowerChart({ samples, height = 260 }: Props) {
+export function PowerChart({ samples, phases, height = 260 }: Props) {
   const data = samples.map((s) => ({ min: +(s.t / 60).toFixed(2), power: Math.round(s.power) }))
+  // Phase boundaries (the initial phase starting at 0 needs no line).
+  const marks = (phases ?? []).filter((p) => p.startSec > 0)
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -59,6 +69,20 @@ export function PowerChart({ samples, height = 260 }: Props) {
           fill="url(#powerFill)"
           isAnimationActive={false}
         />
+        {marks.map((p) => (
+          <ReferenceLine
+            key={p.startSec}
+            x={+(p.startSec / 60).toFixed(2)}
+            stroke="var(--color-warning)"
+            strokeDasharray="4 3"
+            label={{
+              value: PHASE_LABELS[p.phase] ?? p.phase,
+              position: 'insideTopLeft',
+              fill: 'var(--color-warning)',
+              fontSize: 11,
+            }}
+          />
+        ))}
       </AreaChart>
     </ResponsiveContainer>
   )

@@ -141,7 +141,10 @@ func (ws *WebServer) getRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, run)
+	writeJSON(w, struct {
+		*dryer.Run
+		Phases []dryer.PhaseSpan `json:"phases,omitempty"`
+	}{run, ws.manager.PhasesOf(run)})
 }
 
 func (ws *WebServer) labelRun(w http.ResponseWriter, r *http.Request) {

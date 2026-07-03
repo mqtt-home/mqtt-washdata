@@ -77,7 +77,7 @@ export function RunDetail({ id, programs, onBack, onChanged }: Props) {
           <p className="text-sm text-[color:var(--color-muted-foreground)]">{formatDateTime(run.start)}</p>
         </CardHeader>
         <CardContent className="space-y-6">
-          <PowerChart samples={run.samples ?? []} />
+          <PowerChart samples={run.samples ?? []} phases={run.phases} />
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="Duration" value={formatDuration(run.durationSec)} />

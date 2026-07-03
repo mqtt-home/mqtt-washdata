@@ -12,6 +12,7 @@ interface Props {
 export function LiveCard({ status, connected }: Props) {
   const running = status?.state === 'running'
   const antiCrease = running && status?.phase === 'anti-crease'
+  const cooling = running && status?.phase === 'cooling'
   const progress = status && status.progress >= 0 ? status.progress : null
   const remaining = status && status.remainingSec >= 0 ? status.remainingSec : null
 
@@ -31,12 +32,22 @@ export function LiveCard({ status, connected }: Props) {
             className={`rounded-full px-3 py-1 text-xs font-medium ${
               antiCrease
                 ? 'bg-[color:var(--color-warning)]/15 text-[color:var(--color-warning)]'
-                : running
-                  ? 'bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]'
-                  : 'bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)]'
+                : cooling
+                  ? 'bg-[color:var(--color-primary)]/15 text-[color:var(--color-primary)]'
+                  : running
+                    ? 'bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]'
+                    : 'bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)]'
             }`}
           >
-            {connected ? (antiCrease ? 'Knitterschutz' : running ? 'Running' : 'Idle') : 'Offline'}
+            {connected
+              ? antiCrease
+                ? 'Knitterschutz'
+                : cooling
+                  ? 'Cooling down'
+                  : running
+                    ? 'Drying'
+                    : 'Idle'
+              : 'Offline'}
           </span>
         </div>
 

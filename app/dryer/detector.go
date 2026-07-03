@@ -42,6 +42,7 @@ type Detector struct {
 
 	state   detectorState
 	current *Run
+	phase   string // current phase of the in-progress run (monotonic, see phaseRank)
 
 	aboveSince   time.Time // first reading of the current above-threshold streak
 	belowSince   time.Time // first reading of the current below-threshold streak
@@ -116,6 +117,9 @@ func (d *Detector) Feed(ts time.Time, power, energyTotal float64, hasEnergy bool
 			d.recordSample(ts, power)
 			ev = Event{Type: EventSample, Run: d.current}
 		}
+		if p := d.computePhase(); phaseRank(p) > phaseRank(d.phase) {
+			d.phase = p
+		}
 
 		if power <= d.cfg.StopWatts {
 			if d.belowSince.IsZero() {
@@ -136,6 +140,7 @@ func (d *Detector) Feed(ts time.Time, power, energyTotal float64, hasEnergy bool
 
 func (d *Detector) beginRun(ts time.Time, energyTotal float64, hasEnergy bool) {
 	d.state = stateRunning
+	d.phase = PhaseDrying
 	d.aboveSince = time.Time{}
 	d.belowSince = time.Time{}
 	d.energyStart = energyTotal
@@ -217,28 +222,34 @@ func TrimRunTail(r *Run, cfg config.DetectionConfig) {
 	r.MeanPower = round1(meanPower(r.Samples))
 }
 
-// isActiveAt reports whether the run is actively drying at sample i: whether
-// the trailing windowSec ending there spent at least half its time at or above
-// activeWatts. Time is measured with sample-and-hold semantics (a reading
-// holds until the next one), because samples arrive on power *changes*: an
-// anti-crease tumble emits a burst of samples but only covers the few seconds
-// it actually lasted, while the idle baseline in between covers minutes. The
-// continuously powered main cycle is above the threshold nearly 100% of the
-// time.
-func isActiveAt(samples []PowerSample, i int, activeWatts float64, windowSec int) bool {
+// windowActivity measures, with sample-and-hold semantics (a reading holds
+// until the next one), how much of the windowSec ending at sample i was spent
+// at or above watts. Sample-and-hold matters because samples arrive on power
+// *changes*: an anti-crease tumble emits a burst of samples but only covers
+// the few seconds it actually lasted, while the idle baseline in between
+// covers minutes.
+func windowActivity(samples []PowerSample, i int, watts float64, windowSec int) (activeSec, totalSec int) {
 	tStart := samples[i].Offset - windowSec
-	active, total := 0, 0
 	for j := i - 1; j >= 0 && samples[j+1].Offset > tStart; j-- {
 		lo := samples[j].Offset
 		if lo < tStart {
 			lo = tStart
 		}
 		seg := samples[j+1].Offset - lo
-		if samples[j].Power >= activeWatts {
-			active += seg
+		if samples[j].Power >= watts {
+			activeSec += seg
 		}
-		total += seg
+		totalSec += seg
 	}
+	return activeSec, totalSec
+}
+
+// isActiveAt reports whether the run is actively working at sample i: whether
+// the trailing windowSec ending there spent at least half its time at or
+// above activeWatts. The continuously powered main cycle is above the
+// threshold nearly 100% of the time.
+func isActiveAt(samples []PowerSample, i int, activeWatts float64, windowSec int) bool {
+	active, total := windowActivity(samples, i, activeWatts, windowSec)
 	if total == 0 {
 		return samples[i].Power >= activeWatts
 	}
@@ -256,19 +267,115 @@ func lastActiveIndex(samples []PowerSample, activeWatts float64, windowSec int) 
 	return -1
 }
 
+// Cool-down detection tunables.
+const (
+	// coolingWindowSec is deliberately shorter than idleTailWindowSec — the
+	// cool-down phase only lasts a few minutes, a 5-minute window would still
+	// be dominated by the drying level when it starts.
+	coolingWindowSec = 120
+	// coolingLevelFrac: power below this fraction of the run's peak no longer
+	// counts as drying (heat source off; drum + fan draw far less).
+	coolingLevelFrac = 0.5
+	// coolingMinElapsedSec guards against the warm-up ramp at the start of a
+	// run qualifying as cool-down.
+	coolingMinElapsedSec = 600
+)
+
 // Phase reports which phase the in-progress run is in: PhaseDrying while the
-// dryer is actively working, PhaseAntiCrease once the recent profile shows
-// only the brief periodic tumbles of the end sequence ("Knitterschutz").
-// Empty when idle.
+// dryer is actively working, PhaseCooling once the sustained draw has dropped
+// well below the run's peak (heat source off, drum and fan finishing the
+// cycle), and PhaseAntiCrease when only the brief periodic tumbles of the end
+// sequence ("Knitterschutz") remain. Empty when idle.
 func (d *Detector) Phase() string {
-	if d.state != stateRunning || d.current == nil || len(d.current.Samples) == 0 {
+	if d.state != stateRunning {
 		return ""
 	}
+	return d.phase
+}
+
+// phaseRank orders the phases a run passes through. The phase only ever moves
+// forward within a run (a cycle does not resume heating after cool-down), so
+// noisy windows during a transition cannot flip the display back.
+func phaseRank(phase string) int {
+	switch phase {
+	case PhaseCooling:
+		return 2
+	case PhaseAntiCrease:
+		return 3
+	default:
+		return 1
+	}
+}
+
+// PhaseSpan marks where a phase begins on a run's timeline.
+type PhaseSpan struct {
+	Phase    string `json:"phase"`
+	StartSec int    `json:"startSec"`
+}
+
+// PhaseSpans classifies a finished run's profile into phases and returns the
+// boundaries (first span always starts at 0). Unlike the live detection it
+// looks at the whole profile: the cool-down is the trailing stretch of the
+// active part that stays below half the run's peak — with sparse change-driven
+// samples a short cool-down shelf may only be a couple of readings, which a
+// trailing live window cannot resolve but hindsight can.
+func PhaseSpans(samples []PowerSample, cfg config.DetectionConfig) []PhaseSpan {
+	if len(samples) == 0 {
+		return nil
+	}
+	spans := []PhaseSpan{{Phase: PhaseDrying, StartSec: 0}}
+	var peak float64
+	for _, s := range samples {
+		if s.Power > peak {
+			peak = s.Power
+		}
+	}
+
+	// The active part ends here; anything after is the anti-crease tail
+	// (present only on profiles that were not trimmed).
+	end := lastActiveIndex(samples, cfg.StartWatts, idleTailWindowSec)
+	if end < 0 {
+		end = len(samples) - 1
+	}
+
+	cool := end + 1
+	for cool > 0 &&
+		samples[cool-1].Power < coolingLevelFrac*peak &&
+		samples[cool-1].Offset >= coolingMinElapsedSec {
+		cool--
+	}
+	if cool <= end {
+		spans = append(spans, PhaseSpan{Phase: PhaseCooling, StartSec: samples[cool].Offset})
+	}
+	if end < len(samples)-1 {
+		spans = append(spans, PhaseSpan{Phase: PhaseAntiCrease, StartSec: samples[end+1].Offset})
+	}
+	return spans
+}
+
+// computePhase classifies the run's current phase from the recent profile.
+func (d *Detector) computePhase() string {
 	s := d.current.Samples
-	if isActiveAt(s, len(s)-1, d.cfg.StartWatts, idleTailWindowSec) {
+	if len(s) == 0 {
 		return PhaseDrying
 	}
-	return PhaseAntiCrease
+	last := len(s) - 1
+	if !isActiveAt(s, last, d.cfg.StartWatts, idleTailWindowSec) {
+		return PhaseAntiCrease
+	}
+	// Cooling: the recent window is still mostly powered (drum + fan), but
+	// spends almost no time near the drying level anymore. Brief reversal
+	// pauses don't qualify (power is off, not low, during a pause).
+	if s[last].Offset >= coolingMinElapsedSec && d.current.PeakPower > 0 {
+		active, total := windowActivity(s, last, d.cfg.StartWatts, coolingWindowSec)
+		high, _ := windowActivity(s, last, coolingLevelFrac*d.current.PeakPower, coolingWindowSec)
+		if total > 0 &&
+			float64(active) >= 0.5*float64(total) &&
+			float64(high) < 0.35*float64(total) {
+			return PhaseCooling
+		}
+	}
+	return PhaseDrying
 }
 
 func meanPower(samples []PowerSample) float64 {
