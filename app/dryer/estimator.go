@@ -15,11 +15,45 @@ func unknownEstimate() Estimate {
 	return Estimate{RemainingSec: -1, Progress: -1}
 }
 
+// Moisture-sensing dryers adapt the cycle to the load: a wetter load extends
+// the drying phases, a drier one shortens them. The estimator therefore treats
+// a program's duration as dynamic — it infers the pace of the current run from
+// the shape alignment (elapsed time vs. matched profile fraction) and blends it
+// with the program median, shifting trust toward the observed pace as the run
+// progresses. The predicted duration is bounded relative to the durations the
+// program has actually shown, stretched to allow loads outside the seen range.
+const (
+	durBandLo = 0.8
+	durBandHi = 1.3
+)
+
+// predictTotalSec predicts this run's total duration for program p, given the
+// matched shape fraction fr and the elapsed time.
+func predictTotalSec(fr float64, elapsedSec int, p *Program) float64 {
+	med := float64(p.MedianDurSec)
+	if fr <= 0 {
+		return med
+	}
+	pace := float64(elapsedSec) / fr
+	lo, hi := durBandLo*float64(p.MinDurSec), durBandHi*float64(p.MaxDurSec)
+	if lo <= 0 || hi <= 0 {
+		lo, hi = durBandLo*med, durBandHi*med
+	}
+	if pace < lo {
+		pace = lo
+	}
+	if pace > hi {
+		pace = hi
+	}
+	w := clamp01(fr)
+	return w*pace + (1-w)*med
+}
+
 // EstimatePartial recognizes an in-progress run by correlating its partial power
 // shape against the leading portion of every learned program, then predicts the
 // remaining runtime. The best-correlating alignment yields the progress fraction;
-// the matched program's typical duration sets the time scale, cross-checked
-// against energy consumed so far.
+// the time scale is the dynamic duration predicted for this run (see
+// predictTotalSec), cross-checked against energy consumed so far.
 func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int, energyWh float64) Estimate {
 	if elapsedSec <= 0 || len(samples) < 2 {
 		return unknownEstimate()
@@ -44,16 +78,22 @@ func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int, ener
 		}
 		bestCorr = corr
 
+		total := predictTotalSec(fr, elapsedSec, p)
+
 		prog := fr
-		if p.MedianEnergy > 0 && energyWh > 0 {
-			frEnergy := clamp01(energyWh / p.MedianEnergy)
-			prog = 0.6*fr + 0.4*frEnergy
+		if p.MedianEnergy > 0 && energyWh > 0 && p.MedianDurSec > 0 {
+			// A stretched (wetter) run consumes proportionally more energy, so the
+			// expected total energy scales with the predicted duration.
+			expEnergy := p.MedianEnergy * total / float64(p.MedianDurSec)
+			prog = 0.6*fr + 0.4*clamp01(energyWh/expEnergy)
 		}
 		prog = clamp01(prog)
 
-		remaining := int((1 - prog) * float64(p.MedianDurSec))
-		if remaining < 0 {
-			remaining = 0
+		remaining := int((1 - prog) * total)
+		// While the dryer is still running the cycle is not done, even if it has
+		// outlasted the prediction — keep a small sliding remainder instead of 0.
+		if minRemaining := int(total / 50); remaining < minRemaining {
+			remaining = minRemaining
 		}
 		predicted := elapsedSec + remaining
 		progress := clamp01(float64(elapsedSec) / float64(maxInt(predicted, 1)))
@@ -98,13 +138,19 @@ func fallbackEstimate(elapsedSec int, energyWh float64, overallDur int, overallE
 	if overallDur <= 0 {
 		return unknownEstimate()
 	}
-	prog := clamp01(float64(elapsedSec) / float64(overallDur))
+	total := float64(overallDur)
+	if e := float64(elapsedSec); e > total {
+		// Running longer than the historical median: the load is stretching the
+		// cycle, so extend the horizon instead of reporting it as done.
+		total = e * 1.05
+	}
+	prog := clamp01(float64(elapsedSec) / total)
 	if overallEnergy > 0 && energyWh > 0 {
 		prog = 0.5*prog + 0.5*clamp01(energyWh/overallEnergy)
 	}
-	remaining := int((1 - prog) * float64(overallDur))
-	if remaining < 0 {
-		remaining = 0
+	remaining := int((1 - prog) * total)
+	if minRemaining := int(total / 50); remaining < minRemaining {
+		remaining = minRemaining
 	}
 	predicted := elapsedSec + remaining
 	return Estimate{

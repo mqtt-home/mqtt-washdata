@@ -11,7 +11,7 @@ export async function fetchStatus(): Promise<LiveStatus> {
 export async function fetchRuns(): Promise<Run[]> {
   const res = await fetch(`${API_BASE}/runs`)
   if (!res.ok) throw new Error('Failed to fetch runs')
-  return res.json()
+  return (await res.json()) ?? []
 }
 
 export async function fetchRun(id: string): Promise<Run> {
@@ -38,5 +38,5 @@ export async function deleteRun(id: string): Promise<void> {
 export async function fetchPrograms(): Promise<Program[]> {
   const res = await fetch(`${API_BASE}/programs`)
   if (!res.ok) throw new Error('Failed to fetch programs')
-  return res.json()
+  return (await res.json()) ?? []
 }

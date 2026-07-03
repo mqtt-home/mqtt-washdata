@@ -21,10 +21,15 @@ const (
 // Program is a learned dryer program: a representative power-curve shape plus
 // duration/energy statistics, built from its member runs.
 type Program struct {
-	Name         string    `json:"name"`
-	Auto         bool      `json:"auto"` // provisional auto-cluster (vs. user label)
-	Runs         int       `json:"runs"`
-	MedianDurSec int       `json:"medianDurationSec"`
+	Name         string `json:"name"`
+	Auto         bool   `json:"auto"` // provisional auto-cluster (vs. user label)
+	Runs         int    `json:"runs"`
+	MedianDurSec int    `json:"medianDurationSec"`
+	// MinDurSec/MaxDurSec capture the duration spread of the member runs.
+	// Moisture-sensing dryers stretch or shorten a program per load, so the same
+	// program legitimately spans a range of durations.
+	MinDurSec    int       `json:"minDurationSec"`
+	MaxDurSec    int       `json:"maxDurationSec"`
 	MedianEnergy float64   `json:"medianEnergyWh"`
 	PeakPower    float64   `json:"peakPower"`
 	Profile      []float64 `json:"profile"` // representative resampled watts (len profilePoints)
@@ -165,11 +170,18 @@ func buildProgram(name string, auto bool, runs []*Run) *Program {
 	durs := make([]int, len(runs))
 	energies := make([]float64, len(runs))
 	var peak float64
+	minDur, maxDur := 0, 0
 	for i, r := range runs {
 		durs[i] = r.DurationSec
 		energies[i] = r.EnergyWh
 		if r.PeakPower > peak {
 			peak = r.PeakPower
+		}
+		if minDur == 0 || r.DurationSec < minDur {
+			minDur = r.DurationSec
+		}
+		if r.DurationSec > maxDur {
+			maxDur = r.DurationSec
 		}
 	}
 	return &Program{
@@ -177,6 +189,8 @@ func buildProgram(name string, auto bool, runs []*Run) *Program {
 		Auto:         auto,
 		Runs:         len(runs),
 		MedianDurSec: medianInt(durs),
+		MinDurSec:    minDur,
+		MaxDurSec:    maxDur,
 		MedianEnergy: medianFloat(energies),
 		PeakPower:    peak,
 		Profile:      medianProfile(profs, profilePoints),
@@ -211,11 +225,12 @@ func autoName(index int, used map[string]bool) string {
 	}
 }
 
-// Programs returns a snapshot of the learned programs.
+// Programs returns a snapshot of the learned programs. The slice is never nil
+// so an empty snapshot serializes to [] rather than null.
 func (c *Classifier) Programs() []*Program {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return append([]*Program(nil), c.programs...)
+	return append(make([]*Program, 0, len(c.programs)), c.programs...)
 }
 
 // ClassifyFull matches a finished run's full profile against the learned

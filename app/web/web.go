@@ -41,7 +41,6 @@ func NewWebServer(manager *dryer.Manager) *WebServer {
 }
 
 func (ws *WebServer) setupRoutes() {
-	ws.router.Use(loggerchi.Logger())
 	ws.router.Use(middleware.Recoverer)
 	ws.router.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
@@ -53,15 +52,19 @@ func (ws *WebServer) setupRoutes() {
 	}))
 
 	ws.router.Route("/api", func(r chi.Router) {
+		// Health probes are polled by orchestrators — keep them out of the log.
 		r.Get("/health", ws.healthCheck)
 		r.Get("/livez", ws.liveness)
-		r.Get("/status", ws.getStatus)
-		r.Get("/runs", ws.getRuns)
-		r.Get("/runs/{id}", ws.getRun)
-		r.Post("/runs/{id}/label", ws.labelRun)
-		r.Delete("/runs/{id}", ws.deleteRun)
-		r.Get("/programs", ws.getPrograms)
-		r.Get("/events", ws.handleSSE)
+		r.Group(func(r chi.Router) {
+			r.Use(loggerchi.Logger())
+			r.Get("/status", ws.getStatus)
+			r.Get("/runs", ws.getRuns)
+			r.Get("/runs/{id}", ws.getRun)
+			r.Post("/runs/{id}/label", ws.labelRun)
+			r.Delete("/runs/{id}", ws.deleteRun)
+			r.Get("/programs", ws.getPrograms)
+			r.Get("/events", ws.handleSSE)
+		})
 	})
 
 	// Serve the React SPA, falling back to index.html for client-side routes.

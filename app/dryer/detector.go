@@ -2,6 +2,7 @@ package dryer
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/mqtt-home/mqtt-washdata/config"
@@ -203,5 +204,5 @@ func meanPower(samples []PowerSample) float64 {
 }
 
 func round1(v float64) float64 {
-	return float64(int64(v*10+0.5)) / 10
+	return math.Round(v*10) / 10
 }

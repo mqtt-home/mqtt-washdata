@@ -3,6 +3,7 @@ package dryer
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -55,20 +56,30 @@ func (m *Manager) SetStatusCallback(fn func(LiveStatus)) {
 func (m *Manager) Start() {
 	m.classifier.Build(m.store.All())
 
-	statusTopic := StatusTopic(m.cfg.ShellyTopic, m.cfg.SwitchID)
-	logger.Info("Subscribing to Shelly status", "topic", statusTopic)
-	mqtt.Subscribe(statusTopic, m.onShellyMessage)
+	// Subscribe to both message styles: plain component status and Gen2+/Gen3
+	// RPC notifications — which one a device uses depends on its MQTT settings.
+	for _, topic := range []string{
+		StatusTopic(m.cfg.ShellyTopic, m.cfg.SwitchID),
+		RpcTopic(m.cfg.ShellyTopic),
+	} {
+		logger.Info("Subscribing to Shelly status", "topic", topic)
+		mqtt.Subscribe(topic, m.onShellyMessage)
+	}
 
 	// Poke the device so we get a fresh reading right away.
-	mqtt.PublishAbsolute(CommandTopic(m.cfg.ShellyTopic, m.cfg.SwitchID), "status_update", false)
+	mqtt.PublishAbsolute(CommandTopic(m.cfg.ShellyTopic), "status_update", false)
 
 	m.updateLive(time.Now(), 0)
 }
 
 func (m *Manager) onShellyMessage(topic string, payload []byte) {
-	st, err := ParseShellyStatus(payload)
+	st, err := ParseShellyMessage(payload, m.cfg.SwitchID)
 	if err != nil {
 		logger.Warn("Failed to parse Shelly status", "topic", topic, "error", err)
+		return
+	}
+	if st == nil {
+		// RPC notification without power data (e.g. a sys-only update).
 		return
 	}
 	m.process(time.Now(), st.Apower, st.Aenergy.Total, st.Aenergy.Total > 0)
@@ -222,5 +233,5 @@ func (m *Manager) DeleteRun(id string) error {
 }
 
 func round2(v float64) float64 {
-	return float64(int64(v*100+0.5)) / 100
+	return math.Round(v*100) / 100
 }

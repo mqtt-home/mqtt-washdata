@@ -18,7 +18,7 @@ GoReleaser → Docker Hub.
 ## How it works
 
 ```
-Shelly Plug PM 3 ──(MQTT: <shelly_topic>/status/switch:0, apower)──▶ mqtt-washdata
+Shelly Plug PM 3 ──(MQTT: status/switch:0 or events/rpc, apower)──▶ mqtt-washdata
                                                                        │
    detect run (debounced start/stop) ─▶ record power profile ─▶ persist run (JSON)
                                                                        │
@@ -37,8 +37,13 @@ Shelly Plug PM 3 ──(MQTT: <shelly_topic>/status/switch:0, apower)──▶ m
   authoritative named programs; unlabeled runs are clustered automatically
   (`Program A`, `Program B`, …) until you name them.
 - **Remaining-time estimate** — for the live run, the partial curve is aligned to
-  the best-correlating point in each program's timeline; the matched program's
-  typical duration sets the scale, cross-checked against energy consumed so far.
+  the best-correlating point in each program's timeline. Because moisture-sensing
+  dryers stretch or shorten a cycle per load, the program duration is treated as
+  **dynamic**: the run's own pace (elapsed time vs. matched fraction) is blended
+  with the program's typical duration — trusting the observed pace more as the
+  run progresses — bounded by the duration range the program has shown, and
+  cross-checked against energy consumed so far. A run that outlasts its
+  prediction keeps a small sliding remainder instead of showing done.
   Before anything is learned, it falls back to the median of past runs.
 
 ## Configuration
@@ -68,7 +73,12 @@ See [`app/production/config/config.example.json`](app/production/config/config.e
 
 ## MQTT
 
-- **Subscribes**: `<shelly_topic>/status/switch:0` (Shelly switch status with `apower`).
+- **Subscribes** to both message styles a Shelly can be configured for:
+  - `<shelly_topic>/status/switch:0` — plain component status with `apower`.
+  - `<shelly_topic>/events/rpc` — Gen2+/Gen3 RPC `NotifyStatus` frames; the power
+    meter is read from the `switch:<id>` or `pm1:<id>` component (the Plug PM
+    Gen3 reports `pm1:0`). Frames without power data (e.g. sys updates) are ignored.
+- **Publishes** `status_update` to `<shelly_topic>/command` on start to get a fresh reading.
 - **Publishes** (retained): `<mqtt.topic>/status` — the live status payload:
 
 ```json

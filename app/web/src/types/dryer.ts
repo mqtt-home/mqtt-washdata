@@ -41,6 +41,8 @@ export interface Program {
   auto: boolean
   runs: number
   medianDurationSec: number
+  minDurationSec: number
+  maxDurationSec: number
   medianEnergyWh: number
   peakPower: number
   profile: number[]

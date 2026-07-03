@@ -37,7 +37,11 @@ export function Programs({ programs }: Props) {
           <CardContent className="space-y-4">
             <PowerChart samples={p.profile.map((power, i) => ({ t: (i / (p.profile.length - 1)) * p.medianDurationSec, power }))} height={160} />
             <div className="grid grid-cols-3 gap-3">
-              <Stat label="Typical" value={formatDuration(p.medianDurationSec)} />
+              <Stat
+                label="Typical"
+                value={formatDuration(p.medianDurationSec)}
+                hint={p.minDurationSec < p.maxDurationSec ? `${formatDuration(p.minDurationSec)} – ${formatDuration(p.maxDurationSec)}` : undefined}
+              />
               <Stat label="Energy" value={formatEnergy(p.medianEnergyWh)} />
               <Stat label="Peak" value={formatWatts(p.peakPower)} />
             </div>
@@ -53,11 +57,12 @@ export function Programs({ programs }: Props) {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-lg bg-[color:var(--color-muted)]/50 p-3">
       <div className="text-xs text-[color:var(--color-muted-foreground)]">{label}</div>
       <div className="mt-1 text-base font-semibold tabular-nums">{value}</div>
+      {hint && <div className="text-xs text-[color:var(--color-muted-foreground)] tabular-nums">{hint}</div>}
     </div>
   )
 }

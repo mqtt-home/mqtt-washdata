@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { LayoutDashboard, Waves, WifiOff } from 'lucide-react'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LiveCard } from '@/components/LiveCard'
@@ -9,12 +10,8 @@ import { useLiveStatus } from '@/hooks/useSSE'
 import { fetchPrograms, fetchRuns } from '@/lib/api'
 import { Program, Run } from '@/types/dryer'
 
-type View = 'dashboard' | 'programs'
-
 export function App() {
   const { status, isConnected } = useLiveStatus()
-  const [view, setView] = useState<View>('dashboard')
-  const [selectedRun, setSelectedRun] = useState<string | null>(null)
   const [runs, setRuns] = useState<Run[]>([])
   const [programs, setPrograms] = useState<Program[]>([])
   const prevState = useRef<string | undefined>(undefined)
@@ -24,11 +21,16 @@ export function App() {
     fetchPrograms().then(setPrograms).catch(() => {})
   }, [])
 
+  // No polling: history only changes on events we already observe. Load on
+  // startup and whenever the SSE stream (re)connects — a reconnect may mean
+  // the backend restarted and relearned its programs.
   useEffect(() => {
     load()
-    const t = setInterval(load, 15000)
-    return () => clearInterval(t)
   }, [load])
+
+  useEffect(() => {
+    if (isConnected) load()
+  }, [isConnected, load])
 
   // Reload history when a run finishes (running -> idle).
   useEffect(() => {
@@ -53,10 +55,10 @@ export function App() {
           </div>
           <div className="flex items-center gap-2">
             <nav className="flex rounded-md border p-0.5">
-              <NavButton active={view === 'dashboard'} onClick={() => setView('dashboard')}>
+              <NavButton to="/">
                 <LayoutDashboard className="h-4 w-4" /> Dashboard
               </NavButton>
-              <NavButton active={view === 'programs'} onClick={() => setView('programs')}>
+              <NavButton to="/programs">
                 <Waves className="h-4 w-4" /> Programs
               </NavButton>
             </nav>
@@ -66,45 +68,56 @@ export function App() {
       </header>
 
       <main className="mx-auto max-w-3xl space-y-4 px-4 py-6">
-        {selectedRun ? (
-          <RunDetail
-            id={selectedRun}
-            programs={programs}
-            onBack={() => setSelectedRun(null)}
-            onChanged={load}
-          />
-        ) : view === 'dashboard' ? (
-          <>
-            <LiveCard status={status} connected={isConnected} />
-            <RunsList runs={runs} onSelect={setSelectedRun} />
-          </>
-        ) : (
-          <Programs programs={programs} />
-        )}
+        <Routes>
+          <Route path="/" element={<Dashboard status={status} connected={isConnected} runs={runs} />} />
+          <Route path="/programs" element={<Programs programs={programs} />} />
+          <Route path="/runs/:id" element={<RunDetailRoute programs={programs} onChanged={load} />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </main>
     </div>
   )
 }
 
-function NavButton({
-  active,
-  onClick,
-  children,
+function Dashboard({
+  status,
+  connected,
+  runs,
 }: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
+  status: ReturnType<typeof useLiveStatus>['status']
+  connected: boolean
+  runs: Run[]
 }) {
+  const navigate = useNavigate()
   return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-        active
-          ? 'bg-[color:var(--color-primary)] text-[color:var(--color-primary-foreground)]'
-          : 'text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]'
-      }`}
+    <>
+      <LiveCard status={status} connected={connected} />
+      <RunsList runs={runs} onSelect={(id) => navigate(`/runs/${encodeURIComponent(id)}`)} />
+    </>
+  )
+}
+
+function RunDetailRoute({ programs, onChanged }: { programs: Program[]; onChanged: () => void }) {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  if (!id) return <Navigate to="/" replace />
+  return <RunDetail id={id} programs={programs} onBack={() => navigate('/')} onChanged={onChanged} />
+}
+
+function NavButton({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <NavLink
+      to={to}
+      end
+      className={({ isActive }) =>
+        `flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+          isActive
+            ? 'bg-[color:var(--color-primary)] text-[color:var(--color-primary-foreground)]'
+            : 'text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]'
+        }`
+      }
     >
       {children}
-    </button>
+    </NavLink>
   )
 }

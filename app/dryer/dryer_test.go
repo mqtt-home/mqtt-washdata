@@ -96,6 +96,69 @@ func TestDetectorDetectsRun(t *testing.T) {
 	}
 }
 
+// TestParseShellyMessage covers the two message styles a Shelly publishes:
+// plain component status and Gen3 RPC NotifyStatus frames (captured from a
+// real Shelly Plug PM Gen3 with a pm1 power meter component).
+func TestParseShellyMessage(t *testing.T) {
+	t.Run("plain switch status", func(t *testing.T) {
+		payload := `{"id":0,"output":true,"apower":1850.4,"voltage":230.1,"aenergy":{"total":1234.5}}`
+		st, err := ParseShellyMessage([]byte(payload), 0)
+		if err != nil || st == nil {
+			t.Fatalf("err=%v st=%v", err, st)
+		}
+		if st.Apower != 1850.4 || st.Aenergy.Total != 1234.5 {
+			t.Errorf("unexpected values: %+v", st)
+		}
+	})
+
+	t.Run("rpc NotifyStatus with pm1 component", func(t *testing.T) {
+		payload := `{
+			"src":"shellyplugpmg3-907069531520",
+			"dst":"shelly/ug/heizraum/trockner/events",
+			"method":"NotifyStatus",
+			"params":{"ts":1783004880.01,"pm1:0":{
+				"aenergy":{"by_minute":[0,0,0],"minute_ts":1783004880,"total":1},
+				"apower":27,"current":0.123,"freq":50.01,
+				"ret_aenergy":{"by_minute":[0,0,0],"minute_ts":1783004880,"total":0},
+				"voltage":233.3}}}`
+		st, err := ParseShellyMessage([]byte(payload), 0)
+		if err != nil || st == nil {
+			t.Fatalf("err=%v st=%v", err, st)
+		}
+		if st.Apower != 27 || st.Aenergy.Total != 1 || st.Voltage != 233.3 {
+			t.Errorf("unexpected values: %+v", st)
+		}
+	})
+
+	t.Run("rpc NotifyStatus with switch component", func(t *testing.T) {
+		payload := `{"method":"NotifyStatus","params":{"ts":1.0,"switch:0":{"apower":42,"aenergy":{"total":7}}}}`
+		st, err := ParseShellyMessage([]byte(payload), 0)
+		if err != nil || st == nil {
+			t.Fatalf("err=%v st=%v", err, st)
+		}
+		if st.Apower != 42 || st.Aenergy.Total != 7 {
+			t.Errorf("unexpected values: %+v", st)
+		}
+	})
+
+	t.Run("rpc notification without power data", func(t *testing.T) {
+		payload := `{"src":"shellyplugpmg3-907069531520","method":"NotifyStatus","params":{"ts":1783004873.03,"sys":{"available_updates":{"beta":{"version":"2.0.0-beta3"}}}}}`
+		st, err := ParseShellyMessage([]byte(payload), 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if st != nil {
+			t.Errorf("expected nil status for sys-only frame, got %+v", st)
+		}
+	})
+
+	t.Run("garbage payload", func(t *testing.T) {
+		if _, err := ParseShellyMessage([]byte("true"), 0); err == nil {
+			t.Error("expected error for non-object payload")
+		}
+	})
+}
+
 // makeRun builds a finished, labeled run following a shape function.
 func makeRun(id string, start time.Time, durationSec int, program string, shape func(float64) float64) *Run {
 	var samples []PowerSample
@@ -180,6 +243,81 @@ func TestClassifierAndEstimator(t *testing.T) {
 		t.Errorf("EstimatePartial progress = %f, want in (0,1)", est.Progress)
 	}
 	t.Logf("elapsed=%ds remaining=%ds progress=%.2f conf=%.2f", elapsed, est.RemainingSec, est.Progress, est.Confidence)
+}
+
+// partialRun produces samples of a run following shape, stretched to trueDur
+// seconds, observed up to elapsed seconds. Returns samples and consumed energy.
+func partialRun(shape func(float64) float64, trueDur, elapsed int) ([]PowerSample, float64) {
+	var samples []PowerSample
+	var energy float64
+	prev := -1.0
+	for s := 0; s <= elapsed; s += 10 {
+		power := shape(float64(s) / float64(trueDur))
+		samples = append(samples, PowerSample{Offset: s, Power: power})
+		if prev >= 0 {
+			energy += (prev + power) / 2 * 10 / 3600.0
+		}
+		prev = power
+	}
+	return samples, energy
+}
+
+// TestEstimatorDynamicDuration verifies that the estimator follows the pace of
+// the current run: moisture-sensing dryers stretch the cycle for wetter loads
+// and shorten it for drier ones, so the same program has a dynamic duration.
+func TestEstimatorDynamicDuration(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	c := NewClassifier()
+	c.Build([]*Run{
+		makeRun("1", base, 3600, "Cottons", cottonsShape),
+		makeRun("2", base.Add(time.Hour), 3500, "Cottons", cottonsShape),
+	})
+
+	for _, tc := range []struct {
+		name    string
+		trueDur int
+	}{
+		{"wetter load stretches the cycle", 4500},
+		{"drier load shortens the cycle", 2900},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			elapsed := int(0.6 * float64(tc.trueDur))
+			samples, energy := partialRun(cottonsShape, tc.trueDur, elapsed)
+
+			est := c.EstimatePartial(samples, elapsed, energy)
+			if est.Program != "Cottons" {
+				t.Fatalf("program = %q, want Cottons", est.Program)
+			}
+			predicted := elapsed + est.RemainingSec
+			relErr := math.Abs(float64(predicted-tc.trueDur)) / float64(tc.trueDur)
+			t.Logf("trueDur=%d elapsed=%d predictedTotal=%d relErr=%.2f", tc.trueDur, elapsed, predicted, relErr)
+			if relErr > 0.15 {
+				t.Errorf("predicted total %d, want within 15%% of %d", predicted, tc.trueDur)
+			}
+		})
+	}
+}
+
+// TestEstimatorNeverDoneWhileRunning: a run that outlasts everything the
+// program has seen must still report a small positive remainder, not 0.
+func TestEstimatorNeverDoneWhileRunning(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	c := NewClassifier()
+	c.Build([]*Run{
+		makeRun("1", base, 3600, "Cottons", cottonsShape),
+		makeRun("2", base.Add(time.Hour), 3500, "Cottons", cottonsShape),
+	})
+
+	// Full shape already played out, but the dryer keeps running.
+	elapsed := 5200
+	samples, energy := partialRun(cottonsShape, 5000, elapsed)
+	est := c.EstimatePartial(samples, elapsed, energy)
+	if est.RemainingSec <= 0 {
+		t.Errorf("remaining = %d, want > 0 while still running", est.RemainingSec)
+	}
+	if est.Progress >= 1 {
+		t.Errorf("progress = %f, want < 1 while still running", est.Progress)
+	}
 }
 
 func TestEstimatorUnknownWithoutHistory(t *testing.T) {
