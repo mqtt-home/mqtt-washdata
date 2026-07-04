@@ -26,6 +26,7 @@ export function PowerChart({ samples, phases, height = 260 }: Props) {
   const data = samples.map((s) => ({ min: +(s.t / 60).toFixed(2), power: Math.round(s.power) }))
   // Phase boundaries (the initial phase starting at 0 needs no line).
   const marks = (phases ?? []).filter((p) => p.startSec > 0)
+  const endSec = samples.length ? samples[samples.length - 1].t : 0
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -77,7 +78,9 @@ export function PowerChart({ samples, phases, height = 260 }: Props) {
             strokeDasharray="4 3"
             label={{
               value: PHASE_LABELS[p.phase] ?? p.phase,
-              position: 'insideTopLeft',
+              // Near the right edge the label would overflow the chart —
+              // anchor it on the other side of the line there.
+              position: p.startSec > 0.75 * endSec ? 'insideTopRight' : 'insideTopLeft',
               fill: 'var(--color-warning)',
               fontSize: 11,
             }}
