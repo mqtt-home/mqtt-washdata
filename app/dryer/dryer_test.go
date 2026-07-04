@@ -461,18 +461,34 @@ func TestImportRuns(t *testing.T) {
 	m := NewManager(config.DryerConfig{Name: "Test", Detection: testDetectionConfig()}, "t", false, store)
 
 	base := time.Unix(1_700_000_000, 0)
+
+	// A phantom "run" made of chained anti-crease tumble bursts: brief spikes
+	// on an idle baseline, never sustained activity.
+	var phantomSamples []PowerSample
+	for s := 0; s <= 450; s += 60 {
+		if s%300 == 0 {
+			phantomSamples = append(phantomSamples,
+				PowerSample{Offset: s, Power: 110},
+				PowerSample{Offset: s + 5, Power: 130},
+				PowerSample{Offset: s + 15, Power: 7})
+		} else {
+			phantomSamples = append(phantomSamples, PowerSample{Offset: s, Power: 7})
+		}
+	}
+
 	runs := []*Run{
 		makeRun("1", base, 3600, "Cottons", cottonsShape),
 		makeRun("2", base.Add(time.Hour), 3500, "Cottons", cottonsShape),
 		nil,                       // skipped
 		{ID: "3", Finished: true}, // skipped: no duration/samples
+		{ID: "4", Finished: true, DurationSec: 450, Samples: phantomSamples}, // skipped: no sustained activity
 	}
 	imported, skipped, err := m.ImportRuns(runs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if imported != 2 || skipped != 2 {
-		t.Errorf("imported=%d skipped=%d, want 2/2", imported, skipped)
+	if imported != 2 || skipped != 3 {
+		t.Errorf("imported=%d skipped=%d, want 2/3", imported, skipped)
 	}
 	if got := len(m.Runs()); got != 2 {
 		t.Errorf("stored runs = %d, want 2", got)

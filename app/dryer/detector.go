@@ -256,6 +256,20 @@ func isActiveAt(samples []PowerSample, i int, activeWatts float64, windowSec int
 	return float64(active) >= 0.5*float64(total)
 }
 
+// hasSustainedActivity reports whether the profile contains at least one
+// window with substantial coverage that was mostly above the start threshold.
+// Distinguishes a real (even short) cycle from a chain of anti-crease tumble
+// bursts: a burst is active at its own instant but never fills a window.
+func hasSustainedActivity(samples []PowerSample, activeWatts float64, windowSec int) bool {
+	for i := range samples {
+		active, total := windowActivity(samples, i, activeWatts, windowSec)
+		if total >= windowSec/2 && float64(active) >= 0.5*float64(total) {
+			return true
+		}
+	}
+	return false
+}
+
 // lastActiveIndex returns the index of the last sample that still belongs to
 // the active part of the run (see isActiveAt), or -1 when none qualifies.
 func lastActiveIndex(samples []PowerSample, activeWatts float64, windowSec int) int {

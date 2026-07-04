@@ -72,11 +72,32 @@ func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int, ener
 		if len(p.Profile) < 5 || p.MedianDurSec <= 0 {
 			continue
 		}
-		fr, corr := bestAlignment(samples, elapsedSec, p.Profile)
+		// Constrain the alignment scan to fractions whose implied total
+		// duration is plausible for this program: without this, a partial can
+		// correlate near-perfectly with a tiny leading slice of the profile
+		// (Pearson is scale-invariant), implying an absurd multi-hour run.
+		frLo, frHi := 0.0, 1.0
+		if lo := durBandLo * float64(p.MinDurSec); lo > 0 {
+			frHi = float64(elapsedSec) / lo
+		}
+		if hi := durBandHi * float64(p.MaxDurSec); hi > 0 {
+			frLo = float64(elapsedSec) / hi
+		}
+		fr, corr := bestAlignment(samples, elapsedSec, p.Profile, frLo, frHi)
 		if corr <= bestCorr {
 			continue
 		}
 		bestCorr = corr
+
+		// Heat-pump dryers ramp their draw up as the load dries (compressor
+		// pressure rises with temperature). When the recent draw has reached
+		// the profile's crest level, the load is at target dryness no matter
+		// what the shape alignment believes — a lighter load gets there well
+		// before the median timeline. The floor never pulls a further-along
+		// shape estimate back.
+		if frLevel, ok := levelFloor(samples, p.Profile); ok && frLevel > fr {
+			fr = frLevel
+		}
 
 		total := predictTotalSec(fr, elapsedSec, p)
 
@@ -112,15 +133,112 @@ func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int, ener
 	return best
 }
 
+// crestLevelFrac defines "at crest level" for the level floor. Deliberately
+// loose: the same program runs at visibly different absolute levels depending
+// on the load (~10% observed), and a lighter load tops out below the learned
+// median crest.
+const crestLevelFrac = 0.90
+
+// levelFloor returns a floor on the run's progress for ramp-shaped program
+// profiles: when the recent draw has reached the profile's crest level, the
+// run is at least as far along as where the profile first reaches that level.
+// Positions below the crest are deliberately not derived from the level — a
+// shallow ramp (a few W/min) against tens of watts of load-to-load offset
+// makes mid-ramp level positions far noisier than shape alignment.
+func levelFloor(samples []PowerSample, profile []float64) (float64, bool) {
+	n := len(profile)
+	if n < 20 || len(samples) < 2 {
+		return 0, false
+	}
+	sm := smoothProfile(profile, 5)
+
+	// The ramp must crest late (a mid-run hump is not a ramp) and rise
+	// meaningfully above its early level.
+	peakIdx := 0
+	for i, v := range sm {
+		if v > sm[peakIdx] {
+			peakIdx = i
+		}
+	}
+	if peakIdx < n*3/5 {
+		return 0, false
+	}
+	early := 0.0
+	for i := n / 20; i < n/5; i++ {
+		early += sm[i]
+	}
+	early /= float64(n/5 - n/20)
+	if early <= 0 || sm[peakIdx] < 1.15*early {
+		return 0, false // flat profile: level carries no position information
+	}
+
+	if recentLevel(samples, 300) < crestLevelFrac*sm[peakIdx] {
+		return 0, false
+	}
+	// Report where the profile first reaches the crest: the run is at least
+	// that far along. The crest itself would claim too much — the ramp hovers
+	// near peak for the final stretch.
+	for i := 0; i <= peakIdx; i++ {
+		if sm[i] >= crestLevelFrac*sm[peakIdx] {
+			return float64(i) / float64(n-1), true
+		}
+	}
+	return 0, false
+}
+
+// recentLevel is the median power over the trailing windowSec of samples —
+// robust against a single reversal-pause dip or tumble spike.
+func recentLevel(samples []PowerSample, windowSec int) float64 {
+	tStart := samples[len(samples)-1].Offset - windowSec
+	var recent []float64
+	for i := len(samples) - 1; i >= 0 && samples[i].Offset >= tStart; i-- {
+		recent = append(recent, samples[i].Power)
+	}
+	return medianFloat(recent)
+}
+
+// smoothProfile applies a centered moving average of the given width.
+func smoothProfile(profile []float64, width int) []float64 {
+	n := len(profile)
+	out := make([]float64, n)
+	half := width / 2
+	for i := 0; i < n; i++ {
+		lo, hi := i-half, i+half
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > n-1 {
+			hi = n - 1
+		}
+		var sum float64
+		for j := lo; j <= hi; j++ {
+			sum += profile[j]
+		}
+		out[i] = sum / float64(hi-lo+1)
+	}
+	return out
+}
+
 // bestAlignment scans how far into a program's timeline the current partial shape
-// best fits. It returns the progress fraction (leading length / full length) that
-// maximizes the correlation, and that correlation.
-func bestAlignment(samples []PowerSample, elapsedSec int, profile []float64) (float64, float64) {
+// best fits, considering only progress fractions within [frLo, frHi]. It
+// returns the progress fraction (leading length / full length) that maximizes
+// the correlation, and that correlation.
+func bestAlignment(samples []PowerSample, elapsedSec int, profile []float64, frLo, frHi float64) (float64, float64) {
 	n := len(profile)
 	bestFr, bestCorr := float64(0), -2.0
 	// k is the number of leading program points the partial run is compared to.
-	kMin := 5
-	for k := kMin; k <= n; k++ {
+	kMin := int(frLo * float64(n))
+	if kMin < 5 {
+		kMin = 5
+	}
+	kMax := int(frHi*float64(n)) + 1
+	if kMax > n {
+		kMax = n
+	}
+	if kMin > kMax {
+		kMin = kMax // run has outlasted the plausible band: pin to the end
+	}
+	for k := kMin; k <= kMax; k++ {
 		leading := profile[:k]
 		partial := resampleSamples(samples, elapsedSec, k)
 		corr := pearson(partial, leading)

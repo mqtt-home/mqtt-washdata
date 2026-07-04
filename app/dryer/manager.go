@@ -105,6 +105,12 @@ func (m *Manager) finish(run *Run) {
 		logger.Info("Discarding short run", "id", run.ID, "durationSec", run.DurationSec)
 		return
 	}
+	// Anti-crease tumble bursts can chain into a phantom "run" that passes the
+	// duration check without ever doing sustained work — discard those.
+	if !hasSustainedActivity(run.Samples, m.cfg.Detection.StartWatts, idleTailWindowSec) {
+		logger.Info("Discarding run without sustained activity", "id", run.ID, "durationSec", run.DurationSec)
+		return
+	}
 
 	name, conf := m.classifier.ClassifyFull(run)
 	run.ProgramAuto = name
@@ -154,12 +160,22 @@ func (m *Manager) updateLive(ts time.Time, power float64) {
 		ls.Confidence = round2(est.Confidence)
 		ls.RemainingSec = est.RemainingSec
 		ls.Progress = round2(est.Progress)
-		if ls.Phase == PhaseAntiCrease {
+		switch {
+		case ls.Phase == PhaseAntiCrease:
 			// The program itself is done — the dryer only tumbles to prevent
 			// creases. The countdown is over; consumers show the phase instead.
 			ls.RemainingSec = 0
 			ls.Progress = 1
-		} else if est.RemainingSec >= 0 {
+		case ls.Phase == PhaseCooling:
+			// Once cool-down starts the result is decided; only the short
+			// shelf remains regardless of what the shape match believes.
+			if ls.RemainingSec < 0 || ls.RemainingSec > coolingRemainingCapSec {
+				ls.RemainingSec = coolingRemainingCapSec
+			}
+			ls.Progress = round2(clampProgress(elapsed, ls.RemainingSec))
+			eta := ts.Add(time.Duration(ls.RemainingSec) * time.Second)
+			ls.ETA = &eta
+		case est.RemainingSec >= 0:
 			eta := ts.Add(time.Duration(est.RemainingSec) * time.Second)
 			ls.ETA = &eta
 		}
@@ -238,7 +254,8 @@ func (m *Manager) LabelRun(id, program string) (*Run, error) {
 func (m *Manager) ImportRuns(runs []*Run) (int, int, error) {
 	imported, skipped := 0, 0
 	for _, r := range runs {
-		if r == nil || r.ID == "" || !r.Finished || r.DurationSec <= 0 || len(r.Samples) == 0 {
+		if r == nil || r.ID == "" || !r.Finished || r.DurationSec <= 0 || len(r.Samples) == 0 ||
+			!hasSustainedActivity(r.Samples, m.cfg.Detection.StartWatts, idleTailWindowSec) {
 			skipped++
 			continue
 		}
@@ -266,6 +283,18 @@ func (m *Manager) DeleteRun(id string) error {
 	m.classifier.Build(m.store.All())
 	logger.Info("Run deleted", "id", id)
 	return nil
+}
+
+// coolingRemainingCapSec bounds the countdown once the cool-down phase is
+// detected — the drying decision has been made, only the shelf remains.
+const coolingRemainingCapSec = 120
+
+func clampProgress(elapsedSec, remainingSec int) float64 {
+	total := elapsedSec + remainingSec
+	if total <= 0 {
+		return 1
+	}
+	return float64(elapsedSec) / float64(total)
 }
 
 func round2(v float64) float64 {
