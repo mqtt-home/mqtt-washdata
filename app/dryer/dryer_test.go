@@ -2,6 +2,7 @@ package dryer
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -216,20 +217,7 @@ func TestClassifierAndEstimator(t *testing.T) {
 	// Partial estimation at ~40% through a Cottons run.
 	fullDur := 3550
 	elapsed := int(0.4 * float64(fullDur))
-	var partial []PowerSample
-	var energy float64
-	prev := -1.0
-	for s := 0; s <= elapsed; s += 10 {
-		p := float64(s) / float64(fullDur) // progress along the FULL run
-		power := cottonsShape(p)
-		partial = append(partial, PowerSample{Offset: s, Power: power})
-		if prev >= 0 {
-			energy += (prev + power) / 2 * 10 / 3600.0
-		}
-		prev = power
-	}
-
-	est := c.EstimatePartial(partial, elapsed, energy)
+	est := c.EstimatePartial(partialRun(cottonsShape, fullDur, elapsed), elapsed)
 	if est.Program != "Cottons" {
 		t.Errorf("EstimatePartial program = %q, want Cottons", est.Program)
 	}
@@ -246,55 +234,63 @@ func TestClassifierAndEstimator(t *testing.T) {
 }
 
 // partialRun produces samples of a run following shape, stretched to trueDur
-// seconds, observed up to elapsed seconds. Returns samples and consumed energy.
-func partialRun(shape func(float64) float64, trueDur, elapsed int) ([]PowerSample, float64) {
+// seconds, observed up to elapsed seconds.
+func partialRun(shape func(float64) float64, trueDur, elapsed int) []PowerSample {
 	var samples []PowerSample
-	var energy float64
-	prev := -1.0
 	for s := 0; s <= elapsed; s += 10 {
-		power := shape(float64(s) / float64(trueDur))
-		samples = append(samples, PowerSample{Offset: s, Power: power})
-		if prev >= 0 {
-			energy += (prev + power) / 2 * 10 / 3600.0
-		}
-		prev = power
+		samples = append(samples, PowerSample{Offset: s, Power: shape(float64(s) / float64(trueDur))})
 	}
-	return samples, energy
+	return samples
 }
 
-// TestEstimatorDynamicDuration verifies that the estimator follows the pace of
-// the current run: moisture-sensing dryers stretch the cycle for wetter loads
-// and shorten it for drier ones, so the same program has a dynamic duration.
-func TestEstimatorDynamicDuration(t *testing.T) {
+// rampShape models a heat-pump dryer load of trueDur seconds: every load climbs
+// the same ramp in absolute time, crests at three quarters of its cycle (a
+// bigger load crests later and higher) and then sags until the load is dry.
+func rampShape(trueDur int) func(float64) float64 {
+	return func(p float64) float64 {
+		min := p * float64(trueDur) / 60
+		crestMin := 0.75 * float64(trueDur) / 60
+		if min <= crestMin {
+			return 350 + 3*min
+		}
+		return 350 + 3*crestMin - 1.5*(min-crestMin)
+	}
+}
+
+// TestEstimatorFollowsLoadState verifies that the estimator reads the state of
+// the current load: a moisture-sensing dryer runs until the load is dry, so
+// the same program has a dynamic duration. A run whose draw has crested and
+// is sagging is close to done; one still climbing at the same elapsed time
+// has a bigger load and much longer to go.
+func TestEstimatorFollowsLoadState(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
+	var history []*Run
+	for i, dur := 0, 2400; dur <= 7200; i, dur = i+1, dur+300 {
+		history = append(history, makeRun(strconv.Itoa(i), base.Add(time.Duration(i)*3*time.Hour), dur, "Cottons", rampShape(dur)))
+	}
 	c := NewClassifier()
-	c.Build([]*Run{
-		makeRun("1", base, 3600, "Cottons", cottonsShape),
-		makeRun("2", base.Add(time.Hour), 3500, "Cottons", cottonsShape),
-	})
+	c.Build(history)
 
-	for _, tc := range []struct {
-		name    string
-		trueDur int
-	}{
-		{"wetter load stretches the cycle", 4500},
-		{"drier load shortens the cycle", 2900},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			elapsed := int(0.6 * float64(tc.trueDur))
-			samples, energy := partialRun(cottonsShape, tc.trueDur, elapsed)
+	const elapsed = 5400
+	estimate := func(trueDur int) Estimate {
+		samples := partialRun(rampShape(trueDur), trueDur, elapsed)
+		est := c.EstimatePartial(samples, elapsed)
+		if est.Program != "Cottons" {
+			t.Fatalf("program = %q, want Cottons", est.Program)
+		}
+		t.Logf("trueDur=%d elapsed=%d predictedTotal=%d", trueDur, elapsed, elapsed+est.RemainingSec)
+		return est
+	}
 
-			est := c.EstimatePartial(samples, elapsed, energy)
-			if est.Program != "Cottons" {
-				t.Fatalf("program = %q, want Cottons", est.Program)
-			}
-			predicted := elapsed + est.RemainingSec
-			relErr := math.Abs(float64(predicted-tc.trueDur)) / float64(tc.trueDur)
-			t.Logf("trueDur=%d elapsed=%d predictedTotal=%d relErr=%.2f", tc.trueDur, elapsed, predicted, relErr)
-			if relErr > 0.15 {
-				t.Errorf("predicted total %d, want within 15%% of %d", predicted, tc.trueDur)
-			}
-		})
+	crestedDur, climbingDur := 6150, 7050
+	crested, climbing := estimate(crestedDur), estimate(climbingDur)
+
+	predicted := elapsed + crested.RemainingSec
+	if relErr := math.Abs(float64(predicted-crestedDur)) / float64(crestedDur); relErr > 0.10 {
+		t.Errorf("crested run: predicted total %d, want within 10%% of %d", predicted, crestedDur)
+	}
+	if climbing.RemainingSec <= crested.RemainingSec {
+		t.Errorf("still-climbing run remaining = %d, want more than the crested run's %d", climbing.RemainingSec, crested.RemainingSec)
 	}
 }
 
@@ -310,8 +306,8 @@ func TestEstimatorNeverDoneWhileRunning(t *testing.T) {
 
 	// Full shape already played out, but the dryer keeps running.
 	elapsed := 5200
-	samples, energy := partialRun(cottonsShape, 5000, elapsed)
-	est := c.EstimatePartial(samples, elapsed, energy)
+	samples := partialRun(cottonsShape, 5000, elapsed)
+	est := c.EstimatePartial(samples, elapsed)
 	if est.RemainingSec <= 0 {
 		t.Errorf("remaining = %d, want > 0 while still running", est.RemainingSec)
 	}
@@ -510,7 +506,7 @@ func TestImportRuns(t *testing.T) {
 func TestEstimatorUnknownWithoutHistory(t *testing.T) {
 	c := NewClassifier()
 	c.Build(nil)
-	est := c.EstimatePartial([]PowerSample{{Offset: 0, Power: 100}, {Offset: 10, Power: 200}}, 100, 5)
+	est := c.EstimatePartial([]PowerSample{{Offset: 0, Power: 100}, {Offset: 10, Power: 200}}, 100)
 	if est.RemainingSec != -1 || est.Progress != -1 {
 		t.Errorf("expected unknown estimate, got remaining=%d progress=%f", est.RemainingSec, est.Progress)
 	}

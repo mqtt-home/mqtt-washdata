@@ -24,7 +24,7 @@ Shelly Plug PM 3 ──(MQTT: status/switch:0 or events/rpc, apower)──▶ mq
                                                                        │
    learn programs (shape correlation + clustering) ◀── label runs in the UI
                                                                        │
-   live: match partial shape ─▶ estimate remaining time ─▶ MQTT status + web UI (SSE)
+   live: find similar past runs ─▶ estimate remaining time ─▶ MQTT status + web UI (SSE)
 ```
 
 - **Run detection** — a debounced state machine: sustained power above
@@ -36,15 +36,19 @@ Shelly Plug PM 3 ──(MQTT: status/switch:0 or events/rpc, apower)──▶ mq
   which matches *shape* independently of absolute wattage. User labels create
   authoritative named programs; unlabeled runs are clustered automatically
   (`Program A`, `Program B`, …) until you name them.
-- **Remaining-time estimate** — for the live run, the partial curve is aligned to
-  the best-correlating point in each program's timeline. Because moisture-sensing
-  dryers stretch or shorten a cycle per load, the program duration is treated as
-  **dynamic**: the run's own pace (elapsed time vs. matched fraction) is blended
-  with the program's typical duration — trusting the observed pace more as the
-  run progresses — bounded by the duration range the program has shown, and
-  cross-checked against energy consumed so far. A run that outlasts its
-  prediction keeps a small sliding remainder instead of showing done.
-  Before anything is learned, it falls back to the median of past runs.
+- **Remaining-time estimate** — a moisture-sensing dryer runs until the load is
+  dry, so the same program takes anywhere from half an hour to two hours, and
+  its power curve is a featureless ramp whose shape says little about progress.
+  The estimate therefore comes from **similar past runs**: of the runs that were
+  still running at this elapsed time, the ones whose power state looked most
+  like the live run — how high the draw has climbed (bigger loads climb higher),
+  whether it has crested and started to sag (the load is nearly dry), and how
+  fast it is changing — vote with the median of how much longer they took.
+  Expect the early estimate to be rough (the load size is not visible in the
+  power draw yet) and to tighten in the second half. A run that outlasts all
+  history keeps a small sliding remainder instead of showing done. To check the
+  estimator against your own history, download `/api/export` and run
+  `WASHDATA_EXPORT=export.json go test ./dryer -run TestBacktest -v` in `app/`.
 
 ## Configuration
 

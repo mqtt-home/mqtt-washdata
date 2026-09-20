@@ -149,7 +149,7 @@ func (m *Manager) updateLive(ts time.Time, power float64) {
 		cur := m.detector.Current()
 		elapsed := int(ts.Sub(cur.Start).Seconds())
 		energy := m.detector.LiveEnergyWh()
-		est := m.classifier.EstimatePartial(cur.Samples, elapsed, energy)
+		est := m.classifier.EstimatePartial(cur.Samples, elapsed)
 
 		ls.State = StateRunning
 		ls.Phase = m.detector.Phase()

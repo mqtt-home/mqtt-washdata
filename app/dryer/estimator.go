@@ -1,5 +1,10 @@
 package dryer
 
+import (
+	"math"
+	"sort"
+)
+
 // Estimate is the live prediction for an in-progress run.
 type Estimate struct {
 	Program    string
@@ -15,269 +20,201 @@ func unknownEstimate() Estimate {
 	return Estimate{RemainingSec: -1, Progress: -1}
 }
 
-// Moisture-sensing dryers adapt the cycle to the load: a wetter load extends
-// the drying phases, a drier one shortens them. The estimator therefore treats
-// a program's duration as dynamic — it infers the pace of the current run from
-// the shape alignment (elapsed time vs. matched profile fraction) and blends it
-// with the program median, shifting trust toward the observed pace as the run
-// progresses. The predicted duration is bounded relative to the durations the
-// program has actually shown, stretched to allow loads outside the seen range.
+// A moisture-sensing dryer ends the cycle when the load is dry, so the same
+// program legitimately runs anywhere between half an hour and two hours. The
+// power curve is a featureless ramp whose shape says next to nothing about
+// how far along the run is — backtests on real runs showed shape alignment
+// losing to a plain median. What the curve does carry is state: how high the
+// draw has climbed (bigger loads climb higher), and whether it has crested
+// and started to fall (the load is nearly dry). The estimator therefore asks:
+// of the past runs that were still running at this elapsed time, how much
+// longer did the ones that looked most like this run take?
 const (
-	durBandLo = 0.8
-	durBandHi = 1.3
+	// trackStepSec is the resolution of a run's state track.
+	trackStepSec = 60
+	// trackWarmupSec: no level is derived before this much of the run is seen.
+	trackWarmupSec = 300
+	// levelWindowSec is the trailing window the level is the median of —
+	// robust against a single reversal-pause dip or tumble spike.
+	levelWindowSec = 360
+	// levelMinSamples: windows with fewer working samples yield no level.
+	levelMinSamples = 3
+	// workingLevelFrac: samples below this fraction of the peak seen so far
+	// are drum-reversal pauses, not the working draw.
+	workingLevelFrac = 0.5
+	// slopeSpanSteps is how far back the level slope looks (in track steps).
+	slopeSpanSteps = 10
+
+	// neighbours is how many of the most similar past runs are consulted.
+	neighbours = 5
+	// Similarity scales: a difference of one scale unit in any feature counts
+	// the same. Level in W, drop from the crest in W, slope in W/min.
+	levelScale = 20.0
+	dropScale  = 8.0
+	slopeScale = 1.5
+	// missingStateDist is the distance given to a past run whose state at
+	// this elapsed time is unknown.
+	missingStateDist = 9.0
+
+	// minRemainingSec: while the dryer is still running the cycle is not done.
+	minRemainingSec = 60
 )
 
-// predictTotalSec predicts this run's total duration for program p, given the
-// matched shape fraction fr and the elapsed time.
-func predictTotalSec(fr float64, elapsedSec int, p *Program) float64 {
-	med := float64(p.MedianDurSec)
-	if fr <= 0 {
-		return med
-	}
-	pace := float64(elapsedSec) / fr
-	lo, hi := durBandLo*float64(p.MinDurSec), durBandHi*float64(p.MaxDurSec)
-	if lo <= 0 || hi <= 0 {
-		lo, hi = durBandLo*med, durBandHi*med
-	}
-	if pace < lo {
-		pace = lo
-	}
-	if pace > hi {
-		pace = hi
-	}
-	w := clamp01(fr)
-	return w*pace + (1-w)*med
+// runTrack is the per-step state of a run: the working power level and its
+// running maximum, indexed by elapsed time / trackStepSec. NaN when unknown.
+type runTrack struct {
+	durSec  int
+	program string
+	level   []float64
+	crest   []float64
 }
 
-// EstimatePartial recognizes an in-progress run by correlating its partial power
-// shape against the leading portion of every learned program, then predicts the
-// remaining runtime. The best-correlating alignment yields the progress fraction;
-// the time scale is the dynamic duration predicted for this run (see
-// predictTotalSec), cross-checked against energy consumed so far.
-func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int, energyWh float64) Estimate {
+// buildTrack derives the state track of a (partial) run up to uptoSec.
+func buildTrack(samples []PowerSample, uptoSec int) runTrack {
+	n := uptoSec/trackStepSec + 1
+	tr := runTrack{level: make([]float64, n), crest: make([]float64, n)}
+	lo, hi := 0, 0
+	peak := 0.0
+	crest := math.NaN()
+	var window []float64
+	for i := 0; i < n; i++ {
+		t := i * trackStepSec
+		for hi < len(samples) && samples[hi].Offset <= t {
+			if samples[hi].Power > peak {
+				peak = samples[hi].Power
+			}
+			hi++
+		}
+		for lo < hi && samples[lo].Offset <= t-levelWindowSec {
+			lo++
+		}
+		level := math.NaN()
+		if t >= trackWarmupSec {
+			window = window[:0]
+			for _, s := range samples[lo:hi] {
+				if s.Power >= workingLevelFrac*peak {
+					window = append(window, s.Power)
+				}
+			}
+			if len(window) >= levelMinSamples {
+				level = medianFloat(window)
+			}
+		}
+		if !math.IsNaN(level) && !(level <= crest) {
+			crest = level
+		}
+		tr.level[i] = level
+		tr.crest[i] = crest
+	}
+	return tr
+}
+
+// stateAt returns the similarity features at step i: level, drop from the
+// crest, and level slope per minute (NaN when too early). ok is false when
+// the level is unknown.
+func (tr *runTrack) stateAt(i int) (level, drop, slope float64, ok bool) {
+	if i < 0 || i >= len(tr.level) || math.IsNaN(tr.level[i]) {
+		return 0, 0, 0, false
+	}
+	level = tr.level[i]
+	drop = tr.crest[i] - level
+	slope = math.NaN()
+	if j := i - slopeSpanSteps; j >= 0 && !math.IsNaN(tr.level[j]) {
+		slope = (level - tr.level[j]) / slopeSpanSteps
+	}
+	return level, drop, slope, true
+}
+
+// EstimatePartial predicts the remaining runtime of an in-progress run from
+// the past runs that were still running at the same elapsed time, weighting
+// toward those whose power state looked most like this run's (see above).
+// The reported program is the one most of those runs belong to.
+func (c *Classifier) EstimatePartial(samples []PowerSample, elapsedSec int) Estimate {
 	if elapsedSec <= 0 || len(samples) < 2 {
 		return unknownEstimate()
 	}
 
 	c.mu.RLock()
-	programs := c.programs
-	overallDur := c.overallDur
-	overallEnergy := c.overallEnrgy
+	tracks := c.tracks
 	c.mu.RUnlock()
-
-	best := unknownEstimate()
-	bestCorr := -2.0
-
-	for _, p := range programs {
-		if len(p.Profile) < 5 || p.MedianDurSec <= 0 {
-			continue
-		}
-		// Constrain the alignment scan to fractions whose implied total
-		// duration is plausible for this program: without this, a partial can
-		// correlate near-perfectly with a tiny leading slice of the profile
-		// (Pearson is scale-invariant), implying an absurd multi-hour run.
-		frLo, frHi := 0.0, 1.0
-		if lo := durBandLo * float64(p.MinDurSec); lo > 0 {
-			frHi = float64(elapsedSec) / lo
-		}
-		if hi := durBandHi * float64(p.MaxDurSec); hi > 0 {
-			frLo = float64(elapsedSec) / hi
-		}
-		fr, corr := bestAlignment(samples, elapsedSec, p.Profile, frLo, frHi)
-		if corr <= bestCorr {
-			continue
-		}
-		bestCorr = corr
-
-		// Heat-pump dryers ramp their draw up as the load dries (compressor
-		// pressure rises with temperature). When the recent draw has reached
-		// the profile's crest level, the load is at target dryness no matter
-		// what the shape alignment believes — a lighter load gets there well
-		// before the median timeline. The floor never pulls a further-along
-		// shape estimate back.
-		if frLevel, ok := levelFloor(samples, p.Profile); ok && frLevel > fr {
-			fr = frLevel
-		}
-
-		total := predictTotalSec(fr, elapsedSec, p)
-
-		prog := fr
-		if p.MedianEnergy > 0 && energyWh > 0 && p.MedianDurSec > 0 {
-			// A stretched (wetter) run consumes proportionally more energy, so the
-			// expected total energy scales with the predicted duration.
-			expEnergy := p.MedianEnergy * total / float64(p.MedianDurSec)
-			prog = 0.6*fr + 0.4*clamp01(energyWh/expEnergy)
-		}
-		prog = clamp01(prog)
-
-		remaining := int((1 - prog) * total)
-		// While the dryer is still running the cycle is not done, even if it has
-		// outlasted the prediction — keep a small sliding remainder instead of 0.
-		if minRemaining := int(total / 50); remaining < minRemaining {
-			remaining = minRemaining
-		}
-		predicted := elapsedSec + remaining
-		progress := clamp01(float64(elapsedSec) / float64(maxInt(predicted, 1)))
-
-		best = Estimate{
-			Program:      p.Name,
-			Confidence:   clamp01(corr),
-			RemainingSec: remaining,
-			Progress:     progress,
-		}
-	}
-
-	if bestCorr < minMatchCorr {
-		return fallbackEstimate(elapsedSec, energyWh, overallDur, overallEnergy)
-	}
-	return best
-}
-
-// crestLevelFrac defines "at crest level" for the level floor. Deliberately
-// loose: the same program runs at visibly different absolute levels depending
-// on the load (~10% observed), and a lighter load tops out below the learned
-// median crest.
-const crestLevelFrac = 0.90
-
-// levelFloor returns a floor on the run's progress for ramp-shaped program
-// profiles: when the recent draw has reached the profile's crest level, the
-// run is at least as far along as where the profile first reaches that level.
-// Positions below the crest are deliberately not derived from the level — a
-// shallow ramp (a few W/min) against tens of watts of load-to-load offset
-// makes mid-ramp level positions far noisier than shape alignment.
-func levelFloor(samples []PowerSample, profile []float64) (float64, bool) {
-	n := len(profile)
-	if n < 20 || len(samples) < 2 {
-		return 0, false
-	}
-	sm := smoothProfile(profile, 5)
-
-	// The ramp must crest late (a mid-run hump is not a ramp) and rise
-	// meaningfully above its early level.
-	peakIdx := 0
-	for i, v := range sm {
-		if v > sm[peakIdx] {
-			peakIdx = i
-		}
-	}
-	if peakIdx < n*3/5 {
-		return 0, false
-	}
-	early := 0.0
-	for i := n / 20; i < n/5; i++ {
-		early += sm[i]
-	}
-	early /= float64(n/5 - n/20)
-	if early <= 0 || sm[peakIdx] < 1.15*early {
-		return 0, false // flat profile: level carries no position information
-	}
-
-	if recentLevel(samples, 300) < crestLevelFrac*sm[peakIdx] {
-		return 0, false
-	}
-	// Report where the profile first reaches the crest: the run is at least
-	// that far along. The crest itself would claim too much — the ramp hovers
-	// near peak for the final stretch.
-	for i := 0; i <= peakIdx; i++ {
-		if sm[i] >= crestLevelFrac*sm[peakIdx] {
-			return float64(i) / float64(n-1), true
-		}
-	}
-	return 0, false
-}
-
-// recentLevel is the median power over the trailing windowSec of samples —
-// robust against a single reversal-pause dip or tumble spike.
-func recentLevel(samples []PowerSample, windowSec int) float64 {
-	tStart := samples[len(samples)-1].Offset - windowSec
-	var recent []float64
-	for i := len(samples) - 1; i >= 0 && samples[i].Offset >= tStart; i-- {
-		recent = append(recent, samples[i].Power)
-	}
-	return medianFloat(recent)
-}
-
-// smoothProfile applies a centered moving average of the given width.
-func smoothProfile(profile []float64, width int) []float64 {
-	n := len(profile)
-	out := make([]float64, n)
-	half := width / 2
-	for i := 0; i < n; i++ {
-		lo, hi := i-half, i+half
-		if lo < 0 {
-			lo = 0
-		}
-		if hi > n-1 {
-			hi = n - 1
-		}
-		var sum float64
-		for j := lo; j <= hi; j++ {
-			sum += profile[j]
-		}
-		out[i] = sum / float64(hi-lo+1)
-	}
-	return out
-}
-
-// bestAlignment scans how far into a program's timeline the current partial shape
-// best fits, considering only progress fractions within [frLo, frHi]. It
-// returns the progress fraction (leading length / full length) that maximizes
-// the correlation, and that correlation.
-func bestAlignment(samples []PowerSample, elapsedSec int, profile []float64, frLo, frHi float64) (float64, float64) {
-	n := len(profile)
-	bestFr, bestCorr := float64(0), -2.0
-	// k is the number of leading program points the partial run is compared to.
-	kMin := int(frLo * float64(n))
-	if kMin < 5 {
-		kMin = 5
-	}
-	kMax := int(frHi*float64(n)) + 1
-	if kMax > n {
-		kMax = n
-	}
-	if kMin > kMax {
-		kMin = kMax // run has outlasted the plausible band: pin to the end
-	}
-	for k := kMin; k <= kMax; k++ {
-		leading := profile[:k]
-		partial := resampleSamples(samples, elapsedSec, k)
-		corr := pearson(partial, leading)
-		if corr > bestCorr {
-			bestCorr = corr
-			bestFr = float64(k) / float64(n)
-		}
-	}
-	return bestFr, bestCorr
-}
-
-// fallbackEstimate is used before any program matches confidently: it predicts
-// from the overall median duration / energy of past runs.
-func fallbackEstimate(elapsedSec int, energyWh float64, overallDur int, overallEnergy float64) Estimate {
-	if overallDur <= 0 {
+	if len(tracks) == 0 {
 		return unknownEstimate()
 	}
-	total := float64(overallDur)
-	if e := float64(elapsedSec); e > total {
-		// Running longer than the historical median: the load is stretching the
-		// cycle, so extend the horizon instead of reporting it as done.
-		total = e * 1.05
+
+	step := elapsedSec / trackStepSec
+	cur := buildTrack(samples, elapsedSec)
+	level, drop, slope, known := cur.stateAt(step)
+
+	type candidate struct {
+		dist      float64
+		remaining int
+		program   string
 	}
-	prog := clamp01(float64(elapsedSec) / total)
-	if overallEnergy > 0 && energyWh > 0 {
-		prog = 0.5*prog + 0.5*clamp01(energyWh/overallEnergy)
+	var cands []candidate
+	longest := 0
+	for i := range tracks {
+		tr := &tracks[i]
+		if tr.durSec > longest {
+			longest = tr.durSec
+		}
+		if tr.durSec <= elapsedSec {
+			continue
+		}
+		dist := 0.0
+		if known {
+			dist = missingStateDist
+			if l, d, s, ok := tr.stateAt(step); ok {
+				dist = sq((level-l)/levelScale) + sq((drop-d)/dropScale)
+				if !math.IsNaN(slope) && !math.IsNaN(s) {
+					dist += sq((slope - s) / slopeScale)
+				}
+			}
+		}
+		cands = append(cands, candidate{dist, tr.durSec - elapsedSec, tr.program})
 	}
-	remaining := int((1 - prog) * total)
-	if minRemaining := int(total / 50); remaining < minRemaining {
-		remaining = minRemaining
+
+	if len(cands) == 0 {
+		// Outlasted every run seen so far: keep a small sliding remainder
+		// instead of reporting the cycle as done.
+		remaining := maxInt(longest/50, minRemainingSec)
+		return Estimate{
+			RemainingSec: remaining,
+			Progress:     clamp01(float64(elapsedSec) / float64(elapsedSec+remaining)),
+		}
 	}
-	predicted := elapsedSec + remaining
+
+	// Without a known state every survivor counts equally (plain median).
+	if known && len(cands) > neighbours {
+		sort.SliceStable(cands, func(i, j int) bool { return cands[i].dist < cands[j].dist })
+		cands = cands[:neighbours]
+	}
+
+	remainings := make([]int, len(cands))
+	votes := map[string]int{}
+	for i, cd := range cands {
+		remainings[i] = cd.remaining
+		if cd.program != "" {
+			votes[cd.program]++
+		}
+	}
+	remaining := maxInt(medianInt(remainings), minRemainingSec)
+
+	program, best := "", 0
+	for name, n := range votes {
+		if n > best || (n == best && name < program) {
+			program, best = name, n
+		}
+	}
+
 	return Estimate{
-		Program:      "",
-		Confidence:   0,
+		Program:      program,
+		Confidence:   float64(best) / float64(len(cands)),
 		RemainingSec: remaining,
-		Progress:     clamp01(float64(elapsedSec) / float64(maxInt(predicted, 1))),
+		Progress:     clamp01(float64(elapsedSec) / float64(elapsedSec+remaining)),
 	}
 }
+
+func sq(v float64) float64 { return v * v }
 
 func maxInt(a, b int) int {
 	if a > b {

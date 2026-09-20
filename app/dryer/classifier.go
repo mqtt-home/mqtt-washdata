@@ -11,8 +11,8 @@ const (
 	// clusterCorr: minimum profile correlation to fold an unlabeled run into an
 	// existing auto cluster.
 	clusterCorr = 0.85
-	// minMatchCorr: below this correlation a live run is not confidently matched
-	// to any program (estimator falls back to overall history).
+	// minMatchCorr: below this correlation a finished run is not confidently
+	// matched to any program.
 	minMatchCorr = 0.30
 	// minProfileSamples: runs with fewer samples are ignored for learning.
 	minProfileSamples = 3
@@ -38,10 +38,11 @@ type Program struct {
 // Classifier holds the learned programs and recognizes runs by shape correlation.
 // It is safe for concurrent use.
 type Classifier struct {
-	mu           sync.RWMutex
-	programs     []*Program
-	overallDur   int
-	overallEnrgy float64
+	mu       sync.RWMutex
+	programs []*Program
+	// tracks holds the per-step power state of every learned run, consulted
+	// by the remaining-time estimator.
+	tracks []runTrack
 }
 
 func NewClassifier() *Classifier {
@@ -54,8 +55,7 @@ func (c *Classifier) Build(runs []*Run) {
 	labeled := map[string][]*Run{}
 	var order []string
 	var unlabeled []*Run
-	var allDur []int
-	var allEnergy []float64
+	var tracks []runTrack
 
 	// stable input order (oldest first) for deterministic clustering
 	sorted := append([]*Run(nil), runs...)
@@ -65,8 +65,9 @@ func (c *Classifier) Build(runs []*Run) {
 		if !r.Finished || len(r.Samples) < minProfileSamples || r.DurationSec <= 0 {
 			continue
 		}
-		allDur = append(allDur, r.DurationSec)
-		allEnergy = append(allEnergy, r.EnergyWh)
+		tr := buildTrack(r.Samples, r.DurationSec)
+		tr.durSec, tr.program = r.DurationSec, r.Program
+		tracks = append(tracks, tr)
 		if r.Labeled && r.Program != "" {
 			if _, ok := labeled[r.Program]; !ok {
 				order = append(order, r.Program)
@@ -160,8 +161,7 @@ func (c *Classifier) Build(runs []*Run) {
 
 	c.mu.Lock()
 	c.programs = programs
-	c.overallDur = medianInt(allDur)
-	c.overallEnrgy = medianFloat(allEnergy)
+	c.tracks = tracks
 	c.mu.Unlock()
 }
 
