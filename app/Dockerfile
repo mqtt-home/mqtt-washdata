@@ -9,7 +9,7 @@ WORKDIR /app/web
 COPY web/package.json web/pnpm-lock.yaml* web/pnpm-workspace.yaml ./
 
 # Install pnpm and dependencies
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+RUN npm install -g pnpm@11.5.1 && pnpm install --frozen-lockfile
 
 # Copy source files and build
 COPY web/ .

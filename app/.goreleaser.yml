@@ -4,7 +4,7 @@ version: 2
 before:
   hooks:
     - go mod tidy
-    - sh -c "cd web && (command -v pnpm >/dev/null 2>&1 || npm install -g pnpm) && pnpm install --frozen-lockfile && pnpm run build"
+    - sh -c "cd web && (command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11.5.1) && pnpm install --frozen-lockfile && pnpm run build"
 
 builds:
   - id: mqtt-washdata
