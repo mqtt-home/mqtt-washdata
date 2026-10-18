@@ -1,8 +1,7 @@
-import type { ReactNode } from 'react'
-import { Activity, Clock, Gauge, Power, Zap } from 'lucide-react'
-import { Card, CardContent } from '@/components/ui/card'
+import type { CSSProperties, ReactNode } from 'react'
+import { Activity, Gauge, Power, Wind, Zap } from 'lucide-react'
 import { LiveStatus } from '@/types/dryer'
-import { formatClock, formatDuration, formatEnergy, formatWatts } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 
 interface Props {
   status: LiveStatus | null
@@ -10,124 +9,116 @@ interface Props {
 }
 
 export function LiveCard({ status, connected }: Props) {
+  const i = useI18n()
   const running = status?.state === 'running'
   const antiCrease = running && status?.phase === 'anti-crease'
   const cooling = running && status?.phase === 'cooling'
   const progress = status && status.progress >= 0 ? status.progress : null
   const remaining = status && status.remainingSec >= 0 ? status.remainingSec : null
 
-  return (
-    <Card className="overflow-hidden">
-      <CardContent className="p-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex h-2.5 w-2.5 rounded-full ${
-                running ? 'bg-[color:var(--color-success)] animate-pulse' : 'bg-[color:var(--color-muted-foreground)]'
-              }`}
-            />
-            <h2 className="text-xl font-semibold">{status?.dryerName ?? 'Dryer'}</h2>
-          </div>
-          <span
-            className={`rounded-full px-3 py-1 text-xs font-medium ${
-              antiCrease
-                ? 'bg-[color:var(--color-warning)]/15 text-[color:var(--color-warning)]'
-                : cooling
-                  ? 'bg-[color:var(--color-primary)]/15 text-[color:var(--color-primary)]'
-                  : running
-                    ? 'bg-[color:var(--color-success)]/15 text-[color:var(--color-success)]'
-                    : 'bg-[color:var(--color-muted)] text-[color:var(--color-muted-foreground)]'
-            }`}
-          >
-            {connected
-              ? antiCrease
-                ? 'Knitterschutz'
-                : cooling
-                  ? 'Cooling down'
-                  : running
-                    ? 'Drying'
-                    : 'Idle'
-              : 'Offline'}
-          </span>
-        </div>
+  // Colour only ever means state.
+  const [stateClass, stateLabel] = !connected
+    ? ['bad', i.t('state.offline')]
+    : antiCrease
+      ? ['warn', i.t('state.antiCrease')]
+      : cooling
+        ? ['info', i.t('state.cooling')]
+        : running
+          ? ['ok', i.t('state.running')]
+          : ['', i.t('state.idle')]
 
+  const pct = antiCrease ? 100 : progress !== null ? Math.round(progress * 100) : 0
+
+  return (
+    <section className="card">
+      <div className="card-h">
+        <span className="ico sm" style={{ '--c': running ? 'var(--accent)' : 'var(--idle)' } as CSSProperties}>
+          <Wind />
+        </span>
+        <h3 className="min-w-0 truncate">{status?.dryerName || i.t('title')}</h3>
+        <span className={`state ${stateClass} ml-auto`}>
+          <span className={`dot ${running && connected ? 'live' : ''} ${stateClass ? '' : 'idle'}`} />
+          {stateLabel}
+        </span>
+      </div>
+
+      <div className="card-b">
         {running ? (
           <>
-            <div className="mt-6 flex items-end gap-3">
-              {antiCrease ? (
-                <>
-                  <div className="text-5xl font-bold">Knitterschutz</div>
-                  <div className="pb-1 text-sm text-[color:var(--color-muted-foreground)]">
-                    done — laundry can be removed
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="text-5xl font-bold tabular-nums">
-                    {remaining !== null ? formatDuration(remaining) : '–'}
-                  </div>
-                  <div className="pb-1 text-sm text-[color:var(--color-muted-foreground)]">remaining</div>
-                </>
-              )}
-            </div>
-
-            <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-[color:var(--color-muted)]">
+            <div className="mt-2 flex items-center gap-5">
               <div
-                className="h-full rounded-full bg-[color:var(--color-primary)] transition-all duration-700"
-                style={{ width: `${progress !== null ? Math.round(progress * 100) : 0}%` }}
-              />
-            </div>
-
-            <div className="mt-2 flex items-center justify-between text-sm text-[color:var(--color-muted-foreground)]">
-              <span>
-                {status?.program ? (
+                className={`pring ${antiCrease ? 'warn' : ''}`}
+                style={{ '--p': pct } as CSSProperties}
+                role="progressbar"
+                aria-label={i.t('progress')}
+                aria-valuenow={progress !== null || antiCrease ? pct : undefined}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <span className="pct">{progress !== null || antiCrease ? `${pct} %` : '–'}</span>
+              </div>
+              <div className="min-w-0">
+                {antiCrease ? (
                   <>
-                    {status.program}
-                    {status.confidence > 0 && (
-                      <span className="ml-1 opacity-70">({Math.round(status.confidence * 100)}%)</span>
-                    )}
+                    <div className="kicker">{i.t('state.antiCrease')}</div>
+                    <div className="mt-1.5 text-[17px] leading-snug font-semibold">{i.t('antiCrease.hint')}</div>
                   </>
                 ) : (
-                  'Detecting program…'
+                  <>
+                    <div className="kicker">{i.t('remaining')}</div>
+                    <div className="big mt-1.5">{remaining !== null ? i.dur(remaining) : '–'}</div>
+                    {status?.eta && (
+                      <div className="num mt-1.5 text-sm" style={{ color: 'var(--ink-3)' }}>
+                        {i.t('eta.at', { time: i.clock(status.eta) })}
+                      </div>
+                    )}
+                  </>
                 )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-baseline gap-2 text-sm" style={{ color: 'var(--ink-3)' }}>
+              <span>{i.t('program')}</span>
+              <span className="font-medium" style={{ color: 'var(--ink)' }}>
+                {status?.program || i.t('detecting')}
               </span>
-              {!antiCrease && (
-                <span className="flex items-center gap-1">
-                  <Clock className="h-3.5 w-3.5" /> ETA {formatClock(status?.eta)}
-                </span>
+              {status?.program && status.confidence > 0 && (
+                <span className="num">· {i.num(Math.round(status.confidence * 100))} %</span>
               )}
             </div>
 
-            <div className="mt-6 grid grid-cols-3 gap-3">
-              <Metric icon={<Gauge className="h-4 w-4" />} label="Power" value={formatWatts(status?.power ?? 0)} />
-              <Metric icon={<Zap className="h-4 w-4" />} label="Energy" value={formatEnergy(status?.energyWh ?? 0)} />
-              <Metric
-                icon={<Activity className="h-4 w-4" />}
-                label="Elapsed"
-                value={formatDuration(status?.elapsedSec ?? 0)}
-              />
+            <div className="stats mt-4">
+              <Metric icon={<Gauge />} label={i.t('power')} value={i.watts(status?.power ?? 0)} />
+              <Metric icon={<Zap />} label={i.t('energy')} value={i.energy(status?.energyWh ?? 0)} />
+              <Metric icon={<Activity />} label={i.t('elapsed')} value={i.dur(status?.elapsedSec ?? 0)} />
             </div>
           </>
         ) : (
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 py-6 text-[color:var(--color-muted-foreground)]">
-            <Power className="h-10 w-10 opacity-40" />
-            <p>The dryer is not running.</p>
-            <p className="text-sm">Current draw: {formatWatts(status?.power ?? 0)}</p>
+          <div className="flex items-center gap-4 py-4">
+            <span className="ico" style={{ '--c': 'var(--idle)' } as CSSProperties}>
+              <Power />
+            </span>
+            <div>
+              <div className="font-medium">{i.t('idle.text')}</div>
+              <div className="num text-sm" style={{ color: 'var(--ink-3)' }}>
+                {i.t('idle.draw', { power: i.watts(status?.power ?? 0) })}
+              </div>
+            </div>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-[color:var(--color-muted)]/50 p-3">
-      <div className="flex items-center gap-1.5 text-xs text-[color:var(--color-muted-foreground)]">
+    <div className="stat">
+      <div className="k">
         {icon}
         {label}
       </div>
-      <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
+      <div className="v">{value}</div>
     </div>
   )
 }

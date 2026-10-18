@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
-import { Download, LayoutDashboard, Upload, Waves, WifiOff } from 'lucide-react'
-import { ThemeToggle } from '@/components/ThemeToggle'
+import { Download, LayoutDashboard, ListTree, Upload, Wind } from 'lucide-react'
 import { LiveCard } from '@/components/LiveCard'
 import { RunsList } from '@/components/RunsList'
 import { RunDetail } from '@/components/RunDetail'
 import { Programs } from '@/components/Programs'
 import { useLiveStatus } from '@/hooks/useSSE'
 import { EXPORT_URL, fetchPrograms, fetchRuns, importData } from '@/lib/api'
+import { LANGS, useI18n } from '@/lib/i18n'
 import { Program, Run } from '@/types/dryer'
 
 export function App() {
+  const { t } = useI18n()
   const { status, isConnected } = useLiveStatus()
   const [runs, setRuns] = useState<Run[]>([])
   const [programs, setPrograms] = useState<Program[]>([])
@@ -42,33 +43,45 @@ export function App() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b bg-[color:var(--color-background)]/80 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Waves className="h-6 w-6 text-[color:var(--color-primary)]" />
-            <span className="text-lg font-semibold">washdata</span>
-            {!isConnected && (
-              <span title="Disconnected">
-                <WifiOff className="h-4 w-4 text-[color:var(--color-destructive)]" />
-              </span>
-            )}
+      <header className="top-bar">
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-2 px-safe py-2.5">
+          <div className="order-1 flex min-w-0 flex-1 items-center gap-3">
+            <span className="ico">
+              <Wind />
+            </span>
+            <div className="min-w-0">
+              <div className="truncate text-[17px] leading-tight font-semibold tracking-tight">{t('title')}</div>
+              <div className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--ink-3)' }}>
+                {isConnected ? (
+                  'washdata'
+                ) : (
+                  <>
+                    <span className="dot bad" /> {t('disconnected')}
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <nav className="flex rounded-md border p-0.5">
-              <NavButton to="/">
-                <LayoutDashboard className="h-4 w-4" /> Dashboard
-              </NavButton>
-              <NavButton to="/programs">
-                <Waves className="h-4 w-4" /> Programs
-              </NavButton>
+          <div className="order-2 sm:order-4">
+            <LangSwitch />
+          </div>
+          <div className="order-3 flex w-full items-center gap-1 sm:w-auto">
+            <nav className="seg nav-seg">
+              <NavItem to="/">
+                <LayoutDashboard className="size-4" /> {t('nav.overview')}
+              </NavItem>
+              <NavItem to="/programs">
+                <ListTree className="size-4" /> {t('nav.programs')}
+              </NavItem>
             </nav>
-            <ExportImport onImported={load} />
-            <ThemeToggle />
+            <div className="ml-auto flex">
+              <ExportImport onImported={load} />
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-4 px-4 py-6">
+      <main className="mx-auto max-w-3xl space-y-4 px-safe pt-5 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
         <Routes>
           <Route path="/" element={<Dashboard status={status} connected={isConnected} runs={runs} />} />
           <Route path="/programs" element={<Programs programs={programs} />} />
@@ -76,6 +89,19 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+    </div>
+  )
+}
+
+function LangSwitch() {
+  const i = useI18n()
+  return (
+    <div className="seg" role="group" aria-label={i.t('language')}>
+      {LANGS.map((l) => (
+        <button key={l} aria-pressed={i.lang === l} onClick={() => i.setLang(l)}>
+          {l.toUpperCase()}
+        </button>
+      ))}
     </div>
   )
 }
@@ -106,31 +132,29 @@ function RunDetailRoute({ programs, onChanged }: { programs: Program[]; onChange
 }
 
 function ExportImport({ onImported }: { onImported: () => void }) {
+  const { t } = useI18n()
   const fileRef = useRef<HTMLInputElement>(null)
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
     try {
       const result = await importData(file)
-      alert(`Imported ${result.imported} run${result.imported === 1 ? '' : 's'} (${result.skipped} skipped).`)
+      alert(t('import.done', { n: result.imported, skipped: result.skipped }))
       onImported()
     } catch (e) {
-      alert(`Import failed: ${e instanceof Error ? e.message : e}`)
+      alert(t('import.failed', { error: e instanceof Error ? e.message : String(e) }))
     } finally {
       if (fileRef.current) fileRef.current.value = ''
     }
   }
 
-  const iconButton =
-    'rounded p-2 text-[color:var(--color-muted-foreground)] transition-colors hover:text-[color:var(--color-foreground)]'
-
   return (
     <>
-      <a href={EXPORT_URL} download title="Export runs" className={iconButton}>
-        <Download className="h-4 w-4" />
+      <a href={EXPORT_URL} download title={t('export')} aria-label={t('export')} className="icon-btn">
+        <Download className="size-[18px]" />
       </a>
-      <button title="Import runs" className={iconButton} onClick={() => fileRef.current?.click()}>
-        <Upload className="h-4 w-4" />
+      <button title={t('import')} aria-label={t('import')} className="icon-btn" onClick={() => fileRef.current?.click()}>
+        <Upload className="size-[18px]" />
       </button>
       <input
         ref={fileRef}
@@ -143,19 +167,9 @@ function ExportImport({ onImported }: { onImported: () => void }) {
   )
 }
 
-function NavButton({ to, children }: { to: string; children: ReactNode }) {
+function NavItem({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <NavLink
-      to={to}
-      end
-      className={({ isActive }) =>
-        `flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-          isActive
-            ? 'bg-[color:var(--color-primary)] text-[color:var(--color-primary-foreground)]'
-            : 'text-[color:var(--color-muted-foreground)] hover:text-[color:var(--color-foreground)]'
-        }`
-      }
-    >
+    <NavLink to={to} end className={({ isActive }) => (isActive ? 'active' : '')}>
       {children}
     </NavLink>
   )

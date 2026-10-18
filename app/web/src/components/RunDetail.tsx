@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PowerChart } from '@/components/PowerChart'
 import { Program, Run } from '@/types/dryer'
 import { deleteRun, fetchRun, labelRun } from '@/lib/api'
-import { formatDateTime, formatDuration, formatEnergy, formatWatts } from '@/lib/utils'
+import { useI18n } from '@/lib/i18n'
 
 interface Props {
   id: string
@@ -15,6 +13,7 @@ interface Props {
 }
 
 export function RunDetail({ id, programs, onBack, onChanged }: Props) {
+  const i = useI18n()
   const [run, setRun] = useState<Run | null>(null)
   const [label, setLabel] = useState('')
   const [saving, setSaving] = useState(false)
@@ -41,19 +40,23 @@ export function RunDetail({ id, programs, onBack, onChanged }: Props) {
   }
 
   const remove = async () => {
-    if (!confirm('Delete this run? This cannot be undone.')) return
+    if (!confirm(i.t('delete.confirm'))) return
     await deleteRun(id)
     onChanged()
     onBack()
   }
 
+  const back = (
+    <button className="btn" onClick={onBack}>
+      <ArrowLeft className="size-4" /> {i.t('back')}
+    </button>
+  )
+
   if (!run) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
-        <p className="text-[color:var(--color-muted-foreground)]">Loading…</p>
+        {back}
+        <p style={{ color: 'var(--ink-3)' }}>{i.t('loading')}</p>
       </div>
     )
   }
@@ -63,79 +66,83 @@ export function RunDetail({ id, programs, onBack, onChanged }: Props) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          <ArrowLeft className="h-4 w-4" /> Back
-        </Button>
-        <Button variant="destructive" size="sm" onClick={remove}>
-          <Trash2 className="h-4 w-4" /> Delete
-        </Button>
+        {back}
+        <button className="btn danger" onClick={remove}>
+          <Trash2 className="size-4" /> {i.t('delete')}
+        </button>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{run.program || 'Unlabeled run'}</CardTitle>
-          <p className="text-sm text-[color:var(--color-muted-foreground)]">{formatDateTime(run.start)}</p>
-        </CardHeader>
-        <CardContent className="space-y-6">
+      <section className="card">
+        <div className="card-h flex-wrap">
+          <h3 className="min-w-0 text-[17px]! truncate">{run.program || i.t('run.unlabeled')}</h3>
+          <span className="meta num">{i.dateTime(run.start)}</span>
+        </div>
+        <div className="card-b space-y-5">
           <PowerChart samples={run.samples ?? []} phases={run.phases} />
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="Duration" value={formatDuration(run.durationSec)} />
-            <Stat label="Energy" value={formatEnergy(run.energyWh)} />
-            <Stat label="Peak" value={formatWatts(run.peakPower)} />
-            <Stat label="Average" value={formatWatts(run.meanPower)} />
+          <div className="stats grid-cols-2! sm:grid-cols-4!">
+            <Stat label={i.t('duration')} value={i.dur(run.durationSec)} />
+            <Stat label={i.t('energy')} value={i.energy(run.energyWh)} />
+            <Stat label={i.t('peak')} value={i.watts(run.peakPower)} />
+            <Stat label={i.t('average')} value={i.watts(run.meanPower)} />
           </div>
 
           {run.programAuto && (
-            <p className="text-sm text-[color:var(--color-muted-foreground)]">
-              Auto-detected: <span className="font-medium">{run.programAuto}</span>
-              {run.confidence > 0 && <> ({Math.round(run.confidence * 100)}% match)</>}
+            <p className="text-sm" style={{ color: 'var(--ink-3)' }}>
+              {i.t('run.auto', { program: '' })}
+              <span className="font-medium" style={{ color: 'var(--ink)' }}>
+                {run.programAuto}
+              </span>
+              {run.confidence > 0 && <> · {i.t('run.match', { pct: i.num(Math.round(run.confidence * 100)) })}</>}
             </p>
           )}
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium">Program label</label>
+            <label htmlFor="label" className="kicker mb-2 block">
+              {i.t('label.title')}
+            </label>
             <div className="flex flex-wrap gap-2">
-              <input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="e.g. Cottons, Synthetics, Eco…"
-                className="h-10 flex-1 rounded-md border border-[color:var(--color-input)] bg-[color:var(--color-background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[color:var(--color-ring)]"
-              />
-              <Button onClick={() => save(label.trim())} disabled={saving || !label.trim()}>
-                <Check className="h-4 w-4" /> Save
-              </Button>
+              <div className="field min-w-0 flex-1 basis-56">
+                <input
+                  id="label"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder={i.t('label.placeholder')}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && label.trim()) save(label.trim())
+                  }}
+                />
+              </div>
+              <button className="btn primary" onClick={() => save(label.trim())} disabled={saving || !label.trim()}>
+                <Check className="size-4" /> {i.t('save')}
+              </button>
               {run.labeled && (
-                <Button variant="outline" onClick={() => save('')} disabled={saving}>
-                  Clear
-                </Button>
+                <button className="btn" onClick={() => save('')} disabled={saving}>
+                  {i.t('clear')}
+                </button>
               )}
             </div>
             {suggestions.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 {suggestions.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => save(s)}
-                    className="rounded-full border border-[color:var(--color-input)] px-3 py-1 text-xs hover:bg-[color:var(--color-accent)]"
-                  >
+                  <button key={s} onClick={() => save(s)} className="chip">
                     {s}
                   </button>
                 ))}
               </div>
             )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   )
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-[color:var(--color-muted)]/50 p-3">
-      <div className="text-xs text-[color:var(--color-muted-foreground)]">{label}</div>
-      <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
+    <div className="stat">
+      <div className="k">{label}</div>
+      <div className="v">{value}</div>
     </div>
   )
 }
