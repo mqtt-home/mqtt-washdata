@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,17 +70,7 @@ func (ws *WebServer) setupRoutes() {
 	})
 
 	// Serve the React SPA, falling back to index.html for client-side routes.
-	fileServer := http.FileServer(http.Dir(webRoot))
-	ws.router.Handle("/*", func() http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			path := webRoot + r.URL.Path
-			if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
-				fileServer.ServeHTTP(w, r)
-				return
-			}
-			http.ServeFile(w, r, webRoot+"/index.html")
-		}
-	}())
+	ws.router.Handle("/*", spaHandler(webRoot+"/", http.FileServer(http.Dir(webRoot))))
 }
 
 func (ws *WebServer) Start(port int) error {
@@ -293,5 +283,33 @@ func (ws *WebServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		}
+	}
+}
+
+// spaHandler serves the built SPA: existing /assets/* files are content-hashed
+// and cached for a year, every other file and the index.html fallback must be
+// revalidated, and a missing /assets/* file is a 404 (not index.html, which a
+// stale page would otherwise take as its stylesheet).
+func spaHandler(distDir string, fileServer http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if f, err := http.Dir(distDir).Open(r.URL.Path); err == nil {
+			st, _ := f.Stat()
+			f.Close()
+			if st != nil && !st.IsDir() {
+				if strings.HasPrefix(r.URL.Path, "/assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				} else {
+					w.Header().Set("Cache-Control", "no-cache")
+				}
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, distDir+"index.html")
 	}
 }
