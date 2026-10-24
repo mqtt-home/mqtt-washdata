@@ -7,11 +7,12 @@ import { RunDetail } from '@/components/RunDetail'
 import { Programs } from '@/components/Programs'
 import { useLiveStatus } from '@/hooks/useSSE'
 import { EXPORT_URL, fetchPrograms, fetchRuns, importData } from '@/lib/api'
-import { LANGS, useI18n } from '@/lib/i18n'
+import { LangSwitch, useI18n } from '@/lib/i18n'
 import { Program, Run } from '@/types/dryer'
 
 export function App() {
-  const { t } = useI18n()
+  const i18n = useI18n()
+  const { t } = i18n
   const { status, isConnected } = useLiveStatus()
   const [runs, setRuns] = useState<Run[]>([])
   const [programs, setPrograms] = useState<Program[]>([])
@@ -63,7 +64,7 @@ export function App() {
             </div>
           </div>
           <div className="order-2 sm:order-4">
-            <LangSwitch />
+            <LangSwitch i18n={i18n} />
           </div>
           <div className="order-3 flex w-full items-center gap-1 sm:w-auto">
             <nav className="seg nav-seg">
@@ -89,19 +90,6 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-    </div>
-  )
-}
-
-function LangSwitch() {
-  const i = useI18n()
-  return (
-    <div className="seg" role="group" aria-label={i.t('language')}>
-      {LANGS.map((l) => (
-        <button key={l} aria-pressed={i.lang === l} onClick={() => i.setLang(l)}>
-          {l.toUpperCase()}
-        </button>
-      ))}
     </div>
   )
 }
